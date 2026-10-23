@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+
+# Private runtime outputs: recordings, transcripts, reports, and telemetry stay local.
+Meetings/
+telemetry/
+notes.txt
