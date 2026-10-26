@@ -28,7 +28,7 @@ DEFAULT_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_LLM_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
 
-# Implementation note.
+# Phrases Whisper tends to invent during silences (it was trained on subtitled videos).
 HALLUCINATIONS = (
     "amara.org",
     # French
@@ -48,7 +48,7 @@ HALLUCINATIONS = (
 REPORT_LANGUAGES = {"fr": "French", "en": "English"}
 
 
-# Implementation note.
+# ---------------------------------------------------------------- recording
 
 def record(wav_path: Path) -> None:
     import sounddevice as sd
@@ -66,7 +66,7 @@ def record(wav_path: Path) -> None:
 
     print("\n🎙  Recording in progress. Press Enter to stop.\n")
     start = time.time()
-    # Implementation note.
+    # Written to disk continuously: nothing is lost if the script crashes.
     with sf.SoundFile(wav_path, mode="w", samplerate=SR, channels=1, subtype="PCM_16") as f, \
             sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=callback):
         try:
@@ -95,12 +95,12 @@ def load_audio(path: Path) -> np.ndarray:
         audio = audio.mean(axis=1)
         if sr == SR:
             return audio
-    # Implementation note.
+    # Other formats or sample rates: decoded and resampled by ffmpeg (brew install ffmpeg).
     from mlx_whisper.audio import load_audio
     return np.asarray(load_audio(str(path)), dtype=np.float32)
 
 
-# Implementation note.
+# ---------------------------------------------------------------- transcription
 
 def transcribe(audio: np.ndarray, model: str, language: str | None, vocabulary: str | None) -> list[dict]:
     import mlx_whisper
@@ -125,7 +125,7 @@ def transcribe(audio: np.ndarray, model: str, language: str | None, vocabulary: 
     return segments
 
 
-# Implementation note.
+# ---------------------------------------------------------------- speakers
 
 def diarize(audio: np.ndarray, model: str, num_speakers: int | None) -> list[tuple]:
     import torch
@@ -134,9 +134,9 @@ def diarize(audio: np.ndarray, model: str, num_speakers: int | None) -> list[tup
     print("\n👥 Identifying speakers with pyannote (this may take several minutes)...")
     token = os.environ.get("HF_TOKEN")
     try:
-        pipeline = Pipeline.from_pretrained(model, token=token)            # Implementation note.
+        pipeline = Pipeline.from_pretrained(model, token=token)            # pyannote >= 4
     except TypeError:
-        pipeline = Pipeline.from_pretrained(model, use_auth_token=token)   # Implementation note.
+        pipeline = Pipeline.from_pretrained(model, use_auth_token=token)   # pyannote 3.x
     if pipeline is None:
         raise RuntimeError(
             "Access to the pyannote model was denied. Accept the Hugging Face terms "
@@ -166,7 +166,7 @@ def assign_speakers(segments: list[dict], speaker_turns: list[tuple]) -> None:
         s["speaker"] = names[best_speaker]
 
 
-# Implementation note.
+# ---------------------------------------------------------------- formatting
 
 def hms(t: float) -> str:
     t = int(t)
@@ -192,7 +192,7 @@ def format_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# Implementation note.
+# ---------------------------------------------------------------- meeting report
 
 PROMPT = """You are a private meeting assistant. Extract all scientific, technical, and organizational content from the automatic transcript; do not summarize away details. Preserve every idea, number, reference, recommendation, and task.
 
@@ -271,15 +271,15 @@ def summarize(text: str, model: str, report_context: str, language: str | None) 
         for r in stream_generate(llm, tokenizer, prompt, max_tokens=max_tokens):
             chunks.append(r.text)
         s["input_tokens"], s["output_tokens"] = r.prompt_tokens, r.generation_tokens
-        metric("prefill_tokens_per_s", r.prompt_tps)        # Implementation note.
-        metric("generation_tokens_per_s", r.generation_tps)  # Implementation note.
+        metric("prefill_tokens_per_s", r.prompt_tps)        # reading the transcript
+        metric("generation_tokens_per_s", r.generation_tps)  # writing the report
         metric("mlx_peak_gb", r.peak_memory)
         if r.finish_reason == "length":
             event("truncated_output", output_tokens=r.generation_tokens, max_tokens=max_tokens)
     return "".join(chunks).strip()
 
 
-# Implementation note.
+# ---------------------------------------------------------------- main program
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Local meeting transcript")
@@ -351,7 +351,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     with span("transcript", agent="whisper", model=args.whisper_model, language=args.language) as s:
         segments = transcribe(audio, args.whisper_model, args.language, args.vocabulary)
         s["segments"] = len(segments)
-        # Implementation note.
+        # compute time / audio duration: below 1 means faster than real time
         metric("rtf", (time.time() - t0) / audio_duration)
     print(f"   {len(segments)} segments in {time.time() - t0:.0f} s")
 

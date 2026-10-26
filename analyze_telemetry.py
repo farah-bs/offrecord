@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 GB = 1024 ** 3
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]  # Implementation note.
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]  # categorical palette, fixed order
 TEXT, TEXT_2, GRID, STEP_BACKGROUND = "#0b0b0b", "#52514e", "#e4e3df", "#f1f0ec"
 
 plt.rcParams.update({
@@ -38,14 +38,14 @@ def _jsonl(path: Path) -> list[dict]:
         try:
             lines.append(json.loads(line))
         except json.JSONDecodeError:
-            pass  # Implementation note.
+            pass  # last line cut off if the process was killed
     return lines
 
 
 def load_runs(directory: Path | str = "telemetry", name: str | None = None,
             run_id: str | None = None) -> dict[str, pd.DataFrame]:
     """Load runs from `directory`. With run_id, read only that run's directory."""
-    pattern = f"*_{run_id}/run.json" if run_id else "*/run.json"  # Implementation note.
+    pattern = f"*_{run_id}/run.json" if run_id else "*/run.json"  # run directories are named <date>_<name>_<id>
     runs, events, samples = [], [], []
     for d in sorted(Path(directory).glob(pattern)):
         meta = json.loads(d.read_text(encoding="utf-8"))
@@ -98,7 +98,7 @@ def step_summary(spans: pd.DataFrame) -> pd.DataFrame:
     return r.round(3).reset_index().sort_values("average_duration_s", ascending=False)
 
 
-# Implementation note.
+# ---------------------------------------------------------------- charts
 
 def _step_bands(ax, spans_run: pd.DataFrame, labels: bool) -> None:
     roots = spans_run[spans_run["parent_id"].isna()] if "parent_id" in spans_run else spans_run
@@ -106,7 +106,7 @@ def _step_bands(ax, spans_run: pd.DataFrame, labels: bool) -> None:
     for i, s in enumerate(roots.sort_values("start_rel").itertuples()):
         a, b = s.start_rel / 60, s.end_rel / 60
         ax.axvspan(a, b, color=STEP_BACKGROUND if i % 2 == 0 else "#e8e7e2", zorder=0, lw=0)
-        if labels and (b - a) > 0.08 * total:  # Implementation note.
+        if labels and (b - a) > 0.08 * total:  # no label on steps too short to fit one
             ax.text((a + b) / 2, 1.02, s.name, transform=ax.get_xaxis_transform(),
                     ha="center", va="bottom", fontsize=8, color=TEXT_2, clip_on=False)
 
@@ -125,7 +125,7 @@ def timeline(d: dict, run_id: str, output: Path) -> Path:
     for k, (ax, (title, series)) in enumerate(zip(axes, panels)):
         _step_bands(ax, spans_run, labels=k == 0) if not spans_run.empty else None
         for i, (col, lbl, scale) in enumerate(series):
-            # Implementation note.
+            # two sample sources (sampler process, MLX thread), each with its own columns
             pts = smp[smp[col].notna()]
             ax.plot(pts["t_rel"] / 60, pts[col] * scale, color=SERIES[i], label=lbl)
         ax.set_ylabel(title, fontsize=9)
@@ -175,7 +175,7 @@ def memory_by_step(spans: pd.DataFrame, output: Path) -> Path:
     fig, ax = plt.subplots(figsize=(9, 0.25 * len(cols) * len(peaks) + 1.4))
     h = 0.8 / len(cols)
     for i, (c, lbl) in enumerate(cols):
-        # Implementation note.
+        # first series at the top of each group, as in the legend
         pos = [k + ((len(cols) - 1) / 2 - i) * h for k in range(len(peaks))]
         ax.barh(pos, peaks[c], height=h - 0.06, color=SERIES[i], label=lbl, zorder=2)
     ax.set_yticks(range(len(peaks)), peaks.index, fontsize=9)
@@ -199,7 +199,7 @@ def metric_charts(metrics: pd.DataFrame, output: Path) -> list[Path]:
     for name, df in with_step.groupby("name"):
         runs = df["run_id"].unique()
         fig, ax = plt.subplots(figsize=(7, 3.5))
-        for i, rid in enumerate(runs[-3:]):  # Implementation note.
+        for i, rid in enumerate(runs[-3:]):  # more than 3 overlaid runs becomes unreadable
             r = df[df["run_id"] == rid].sort_values("step")
             ax.plot(r["step"], r["value"], color=SERIES[i], label=rid, marker="o", markersize=4)
         if len(runs) > 1:
@@ -267,10 +267,10 @@ def evolution_by_run(spans: pd.DataFrame, runs: pd.DataFrame, output: Path) -> P
     """Duration of each step from one run to the next (identify regressions)."""
     path = output / "evolution_by_run.png"
     if runs["run_id"].nunique() < 2:
-        path.unlink(missing_ok=True)  # Implementation note.
+        path.unlink(missing_ok=True)  # do not leave a chart from a previous analysis
         return None
     spans = spans.assign(step=spans.apply(_label, axis=1))
-    # Implementation note.
+    # top-level steps only, the 8 most expensive (one fixed color each)
     roots = spans[spans["parent_id"].isna()] if "parent_id" in spans else spans
     top = roots.groupby("step")["duration_s"].mean().nlargest(8).index
     order = runs.sort_values("start")["run_id"].tolist()

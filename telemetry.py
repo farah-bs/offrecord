@@ -122,7 +122,7 @@ class _ProcessProbe:
         self.proc.cpu_percent(None)
 
     def process(self) -> list[psutil.Process]:
-        # Implementation note.
+        # Process objects are kept between calls: cpu_percent() measures since the previous call.
         try:
             live = {c.pid: c for c in self.proc.children(recursive=True) if c.pid not in self.excluded}
         except psutil.Error:
@@ -166,7 +166,7 @@ class _ProcessProbe:
                 t = p.cpu_times()
                 total += t.user + t.system
                 if p is self.proc:
-                    total += t.children_user + t.children_system  # Implementation note.
+                    total += t.children_user + t.children_system  # children that already exited
             except psutil.Error:
                 pass
         return total
@@ -184,8 +184,8 @@ def _sampler(pid: int, path: str, interval: float) -> None:
                 vm = psutil.virtual_memory()
                 e = {
                     "t": round(time.time(), 3),
-                    "process_cpu_pct": round(cpu, 1),           # Implementation note.
-                    "system_cpu_pct": psutil.cpu_percent(None),  # Implementation note.
+                    "process_cpu_pct": round(cpu, 1),           # 100 % = one full core
+                    "system_cpu_pct": psutil.cpu_percent(None),  # 100 % = the whole machine
                     "rss": rss,
                     "system_memory_used": vm.total - vm.available,
                     "swap_used": psutil.swap_memory().used,
@@ -207,12 +207,12 @@ class Telemetry:
         timestamp = dt.datetime.now().strftime("%Y-%m-%d_%Hh%M%S")
         self.directory = Path(directory) / f"{timestamp}_{name}_{self.id}"
         self._lock = threading.Lock()
-        self._samples: list[dict] = []  # Implementation note.
+        self._samples: list[dict] = []  # re-read from samples.jsonl to compute each span's peaks
         self._offset = 0
         self._stop = threading.Event()
         self._previous = None
 
-    # Implementation note.
+    # ---------------------------------------------------------------- lifecycle
 
     def __enter__(self):
         global _active
@@ -286,7 +286,7 @@ class Telemetry:
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
         tmp.replace(self.directory / "run.json")
 
-    # Implementation note.
+    # ---------------------------------------------------------------- sampling
 
     def _framework_loop(self) -> None:
         while not self._stop.wait(self.interval):
@@ -310,7 +310,7 @@ class Telemetry:
                 except json.JSONDecodeError:
                     pass
 
-    # Implementation note.
+    # ---------------------------------------------------------------- logging
 
     def _write(self, evt: dict) -> None:
         current = _current_span.get()
@@ -378,7 +378,7 @@ class Telemetry:
             })
 
 
-# Implementation note.
+# ---------------------------------------------------------------- module API (no-op when no run is active)
 
 @contextmanager
 def _empty_span(attrs):
