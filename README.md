@@ -106,7 +106,13 @@ python meeting.py \
   --title "team-meeting"
 ```
 
-The report is generated locally with the default Qwen model. Change the model with `--llm-model` if needed. `--vocabulary` accepts technical terms to guide Whisper:
+The report is generated locally with the default Qwen model. Change the model with `--llm-model` if needed.
+Transcripts longer than about 12,000 tokens (roughly 20 minutes of speech) are handled in two
+passes: detailed notes are taken on each part, then the report is written from those notes. This keeps
+details from long meetings and avoids one very long prompt. A warning is printed (and logged in the
+telemetry) if any output reaches its length limit.
+
+`--vocabulary` accepts technical terms to guide Whisper:
 
 ```bash
 python meeting.py \

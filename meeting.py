@@ -225,7 +225,7 @@ is not present in the transcript or context.
 No additional glossary provided.
 
 ## Output format
-Write the report in {language}, in Markdown, with exactly these sections, in this order. Keep the section titles below as they are. If a section is empty, write "Nothing mentioned".
+Write the report in {language}, in Markdown, with exactly these sections, in this order. If a section is empty, write "Nothing mentioned".
 
 ## Summary
 Meeting subject, main results, and conclusions in one paragraph.
@@ -262,32 +262,83 @@ Passages too degraded to interpret confidently, with your best reading hypothesi
 """
 
 
-def summarize(text: str, model: str, report_context: str, language: str | None) -> str:
-    from mlx_lm import load, stream_generate
+NOTES_PROMPT = """You are a private meeting assistant. You receive part {index} of {total} of an automatic meeting transcript. A final report will later be written from the notes of every part, so extract everything now; do not write the report yet.
 
-    max_tokens = 2000
-    print(f"\n🧠 Writing the meeting report with {model} (first run: ~4 GB to download)...")
-    with span("llm_loading", model=model):
-        llm, tokenizer = load(model)
-    messages = [
-        {"role": "system", "content": PROMPT.format(
-            context=report_context.strip() or "No additional context provided.",
-            language=REPORT_LANGUAGES.get(language, "the language of the transcript"),
-        )},
-        {"role": "user", "content": "Meeting transcript:\n\n" + text},
-    ]
+Write exhaustive bullet points in {language}, in chronological order, covering every idea, number, reference, recommendation, decision, deadline, task (with its owner when stated) and open question in this part. Keep timestamps and speaker names when present. Invent nothing, keep technical names and numbers exactly, and mark unclear speech recognition with [uncertain].
+
+## User-provided context
+{context}
+"""
+
+# Transcripts longer than this (in tokens) are summarized in parts, then merged (map-reduce):
+# a 7B model keeps details better over several short prompts than over one very long one.
+CHUNK_TOKENS = 12000  # about 20 minutes of speech
+NOTES_MAX_TOKENS = 3000
+REPORT_MAX_TOKENS = 4000
+
+
+def split_transcript(text: str, count_tokens, max_tokens: int | None = None) -> list[str]:
+    """Split on line boundaries (timestamps or speaker turns) into parts of at most max_tokens."""
+    max_tokens = max_tokens or CHUNK_TOKENS
+    parts, current, size = [], [], 0
+    for line in text.splitlines():
+        n = count_tokens(line) + 1
+        if current and size + n > max_tokens:
+            parts.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += n
+    if current:
+        parts.append("\n".join(current))
+    return parts
+
+
+def _generate(llm, tokenizer, system: str, user: str, max_tokens: int, step: str, **attrs) -> str:
+    from mlx_lm import stream_generate
+
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-    with span("generation_llm", model=model, max_tokens=max_tokens) as s:
+    with span(step, max_tokens=max_tokens, **attrs) as s:
         chunks, r = [], None
         for r in stream_generate(llm, tokenizer, prompt, max_tokens=max_tokens):
             chunks.append(r.text)
         s["input_tokens"], s["output_tokens"] = r.prompt_tokens, r.generation_tokens
-        metric("prefill_tokens_per_s", r.prompt_tps)        # reading the transcript
-        metric("generation_tokens_per_s", r.generation_tps)  # writing the report
+        metric("prefill_tokens_per_s", r.prompt_tps)        # reading the input
+        metric("generation_tokens_per_s", r.generation_tps)  # writing the output
         metric("mlx_peak_gb", r.peak_memory)
         if r.finish_reason == "length":
-            event("truncated_output", output_tokens=r.generation_tokens, max_tokens=max_tokens)
+            event("truncated_output", step=step, output_tokens=r.generation_tokens, max_tokens=max_tokens)
+            print(f"⚠️  {step}: output cut at {max_tokens} tokens, the end may be missing.")
     return "".join(chunks).strip()
+
+
+def summarize(text: str, model: str, report_context: str, language: str | None) -> str:
+    from mlx_lm import load
+
+    print(f"\n🧠 Writing the meeting report with {model} (first run: ~4 GB to download)...")
+    with span("llm_loading", model=model):
+        llm, tokenizer = load(model)
+    context = report_context.strip() or "No additional context provided."
+    report_language = REPORT_LANGUAGES.get(language, "the language of the transcript")
+    system = PROMPT.format(context=context, language=report_language)
+
+    parts = split_transcript(text, lambda line: len(tokenizer.encode(line)))
+    metric("report_parts", len(parts))
+    if len(parts) == 1:
+        return _generate(llm, tokenizer, system, "Meeting transcript:\n\n" + text,
+                         REPORT_MAX_TOKENS, "generation_llm", model=model)
+
+    notes = []
+    for i, part in enumerate(parts, 1):
+        print(f"   part {i}/{len(parts)}...")
+        notes_system = NOTES_PROMPT.format(index=i, total=len(parts), language=report_language,
+                                           context=context)
+        notes.append(_generate(llm, tokenizer, notes_system, "Transcript part:\n\n" + part,
+                               NOTES_MAX_TOKENS, "notes_llm", model=model, part=i))
+    merged = "\n\n".join(f"### Part {i}\n{n}" for i, n in enumerate(notes, 1))
+    return _generate(llm, tokenizer, system,
+                     "Detailed notes taken from the meeting transcript, part by part, in chronological "
+                     "order:\n\n" + merged, REPORT_MAX_TOKENS, "generation_llm", model=model)
 
 
 # ---------------------------------------------------------------- main program

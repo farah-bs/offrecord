@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 import meeting
 
@@ -86,3 +88,47 @@ def test_bug_in_optional_step_shows_its_traceback(fake_whisper, wav_file, tmp_pa
                                         fake_whisper, wav_file, tmp_path, monkeypatch, capsys)
     assert "Speaker identification unavailable" in out.out
     assert "Traceback" in out.err and "AttributeError" in out.err
+
+
+def test_split_transcript_respects_budget_and_line_boundaries():
+    lines = [f"[00:00:{i:02d}] word word word" for i in range(10)]  # 5 "tokens" per line with the +1
+    parts = meeting.split_transcript("\n".join(lines), lambda line: len(line.split()), max_tokens=12)
+    assert ["\n".join(lines[0:2]), "\n".join(lines[2:4])] == parts[:2]
+    assert "\n".join(parts).splitlines() == lines
+
+
+class _FakeLLM:
+    """Stands in for mlx_lm: records every prompt and answers with a numbered reply."""
+
+    def __init__(self, monkeypatch):
+        self.prompts = []
+        monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace(
+            load=lambda model: ("llm", self), stream_generate=self.stream_generate))
+
+    def encode(self, text):
+        return text.split()
+
+    def apply_chat_template(self, messages, **kwargs):
+        return "\n".join(m["content"] for m in messages)
+
+    def stream_generate(self, llm, tokenizer, prompt, max_tokens):
+        self.prompts.append(prompt)
+        yield types.SimpleNamespace(text=f"reply {len(self.prompts)}", prompt_tokens=1, generation_tokens=1,
+                                    prompt_tps=1.0, generation_tps=1.0, peak_memory=1.0, finish_reason="stop")
+
+
+def test_short_transcript_is_reported_in_one_pass(monkeypatch):
+    fake = _FakeLLM(monkeypatch)
+    assert meeting.summarize("[00:00:00] short meeting", "model", "", "fr") == "reply 1"
+    assert len(fake.prompts) == 1
+    assert "Write the report in French" in fake.prompts[0]
+
+
+def test_long_transcript_is_reported_with_map_reduce(monkeypatch):
+    fake = _FakeLLM(monkeypatch)
+    monkeypatch.setattr(meeting, "CHUNK_TOKENS", 10)
+    text = "\n".join(f"[00:00:{i:02d}] one two three" for i in range(6))
+    assert meeting.summarize(text, "model", "", "en") == "reply 4"
+    notes, final = fake.prompts[:3], fake.prompts[3]
+    assert all("part" in p and "of 3" in p for p in notes)
+    assert "reply 1" in final and "reply 3" in final and "Write the report in English" in final
