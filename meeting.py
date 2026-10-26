@@ -22,12 +22,14 @@ from pathlib import Path
 
 import numpy as np
 
+import dictionary as dictionary_file
 from telemetry import Telemetry, event, metric, span
 
 SR = 16000
 DEFAULT_WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_LLM_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
+DEFAULT_DICTIONARY = Path(__file__).resolve().parent / "dictionary.json"
 
 # Phrases Whisper tends to invent during silences (it was trained on subtitled videos).
 HALLUCINATIONS = (
@@ -49,7 +51,7 @@ HALLUCINATIONS = (
 REPORT_LANGUAGES = {"fr": "French", "en": "English"}
 
 # Options whose values may identify people or projects: never written to telemetry.
-PRIVATE_OPTIONS = ("--file", "--report-context", "--vocabulary")
+PRIVATE_OPTIONS = ("--file", "--report-context", "--vocabulary", "--dictionary")
 
 # Failures of optional steps that come from the environment, not from a bug: missing package,
 # refused model access, download or disk problem. Anything else also prints its traceback.
@@ -371,6 +373,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--report-context", default="",
                    help="optional context to customize the report (project, audience, terminology, etc.)")
     p.add_argument("--vocabulary", help="technical words to guide Whisper (names, acronyms...)")
+    p.add_argument("--dictionary", type=Path, default=DEFAULT_DICTIONARY,
+                   help="personal dictionary of terms and corrections (default: dictionary.json next to "
+                        "the script; ignored if missing)")
     p.add_argument("--language", default="fr",
                    help="language code spoken in the meeting (fr, en, ...), or 'auto' to detect it "
                         "(default: fr)")
@@ -412,6 +417,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     name = dt.datetime.now().strftime("%Y-%m-%d_%Hh%M")
     if args.title:
         name += "_" + "".join(c if c.isalnum() else "-" for c in args.title)
+    # Loaded before recording, so that a malformed file does not cost a whole meeting.
+    dictionary = dictionary_file.load(args.dictionary.expanduser())
+    metric("dictionary_terms", len(dictionary["terms"]))
+    metric("dictionary_corrections", len(dictionary["corrections"]))
     output = args.directory / name
     output.mkdir(parents=True, exist_ok=True)
 
@@ -437,6 +446,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # compute time / audio duration: below 1 means faster than real time
         metric("rtf", (time.time() - t0) / audio_duration)
     print(f"   {len(segments)} segments in {time.time() - t0:.0f} s")
+
+    corrected = dictionary_file.apply_corrections(segments, dictionary["corrections"])
+    metric("corrections_applied", corrected)
+    if corrected:
+        print(f"   {corrected} corrections from the dictionary")
 
     if args.speakers:
         try:

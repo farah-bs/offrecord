@@ -152,6 +152,6 @@ def test_private_inputs_stay_out_of_telemetry(fake_whisper, wav_file, tmp_path, 
 
 def test_redacted_command():
     assert meeting.redacted_command(["meeting.py", "--file", "a.m4a", "--report-context=x", "--report",
-                                     "--vocabulary", "y", "--language", "fr"]) == [
+                                     "--vocabulary", "y", "--dictionary", "d.json", "--language", "fr"]) == [
         "meeting.py", "--file", "<redacted>", "--report-context=<redacted>", "--report",
-        "--vocabulary", "<redacted>", "--language", "fr"]
+        "--vocabulary", "<redacted>", "--dictionary", "<redacted>", "--language", "fr"]

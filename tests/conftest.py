@@ -57,3 +57,11 @@ def wav_file(tmp_path):
     path = tmp_path / "meeting.wav"
     sf.write(path, (0.1 * np.sin(np.linspace(0, 2000, 16000 * 3))).astype(np.float32), 16000)
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_personal_dictionary(tmp_path, monkeypatch):
+    """Keep the user's real dictionary.json out of the tests: each test starts without one."""
+    import meeting
+    monkeypatch.setattr(meeting, "DEFAULT_DICTIONARY", tmp_path / "dictionary.json")
+    return tmp_path / "dictionary.json"
