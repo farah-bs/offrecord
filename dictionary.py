@@ -71,3 +71,13 @@ def prompt_terms(terms: list[str], vocabulary: str | None = None) -> list[str]:
 
 def whisper_prompt(terms: list[str]) -> str | None:
     return ", ".join(terms) + "." if terms else None
+
+
+def glossary(dictionary: dict, vocabulary: str | None = None) -> str:
+    """Glossary section of the report prompt: every term, with no length limit."""
+    extra = [t.strip() for t in (vocabulary or "").split(",") if t.strip()]
+    terms = dict.fromkeys(extra + dictionary["terms"] + list(dictionary["corrections"].values()))
+    if not terms:
+        return "No additional glossary provided."
+    return ("Names and terms that may appear in the meeting. Spell them exactly as written here:\n"
+            + "\n".join(f"- {t}" for t in terms))

@@ -272,7 +272,7 @@ is not present in the transcript or context.
 5. Treat implicit suggestions as actionable tasks. Do not merge distinct ideas or omit minor points.
 
 ## Glossary
-No additional glossary provided.
+{glossary}
 
 ## Output format
 Write the report in {language}, in Markdown, with exactly these sections, in this order. If a section is empty, write "Nothing mentioned".
@@ -318,6 +318,9 @@ Write exhaustive bullet points in {language}, in chronological order, covering e
 
 ## User-provided context
 {context}
+
+## Glossary
+{glossary}
 """
 
 # Transcripts longer than this (in tokens) are summarized in parts, then merged (map-reduce):
@@ -362,7 +365,8 @@ def _generate(llm, tokenizer, system: str, user: str, max_tokens: int, step: str
     return "".join(chunks).strip()
 
 
-def summarize(text: str, model: str, report_context: str, language: str | None) -> str:
+def summarize(text: str, model: str, report_context: str, language: str | None,
+              glossary: str = "No additional glossary provided.") -> str:
     from mlx_lm import load
 
     print(f"\n🧠 Writing the meeting report with {model} (first run: ~4 GB to download)...")
@@ -370,7 +374,7 @@ def summarize(text: str, model: str, report_context: str, language: str | None) 
         llm, tokenizer = load(model)
     context = report_context.strip() or "No additional context provided."
     report_language = REPORT_LANGUAGES.get(language, "the language of the transcript")
-    system = PROMPT.format(context=context, language=report_language)
+    system = PROMPT.format(context=context, language=report_language, glossary=glossary)
 
     parts = split_transcript(text, lambda line: len(tokenizer.encode(line)))
     metric("report_parts", len(parts))
@@ -382,7 +386,7 @@ def summarize(text: str, model: str, report_context: str, language: str | None) 
     for i, part in enumerate(parts, 1):
         print(f"   part {i}/{len(parts)}...")
         notes_system = NOTES_PROMPT.format(index=i, total=len(parts), language=report_language,
-                                           context=context)
+                                           context=context, glossary=glossary)
         notes.append(_generate(llm, tokenizer, notes_system, "Transcript part:\n\n" + part,
                                NOTES_MAX_TOKENS, "notes_llm", model=model, part=i))
     merged = "\n\n".join(f"### Part {i}\n{n}" for i, n in enumerate(notes, 1))
@@ -501,7 +505,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if args.report:
         try:
             with span("meeting_report", agent="llm", model=args.llm_model):
-                report_text = summarize(text, args.llm_model, args.report_context, args.language)
+                report_text = summarize(text, args.llm_model, args.report_context, args.language,
+                                        dictionary_file.glossary(dictionary, args.vocabulary))
             (output / "meeting_report.md").write_text(f"# Meeting report: {name}\n\n{report_text}\n", encoding="utf-8")
             print(f"✅ Meeting report: {output / 'meeting_report.md'}")
         except Exception as e:

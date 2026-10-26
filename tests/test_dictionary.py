@@ -82,3 +82,20 @@ def test_prompt_is_sent_to_every_block_with_realigned_timestamps(monkeypatch, wa
 def test_without_prompt_the_audio_is_transcribed_in_one_call(fake_whisper):
     meeting.transcribe(None, "model", "fr", None)
     assert fake_whisper["initial_prompt"] is None
+
+
+def test_glossary_lists_every_term_once():
+    d = {"terms": ["TeraSPIN", "LABIX"], "corrections": {"Lefebre": "Lefebvre", "labix": "LABIX"}}
+    assert dictionary.glossary(d, "MLX") == (
+        "Names and terms that may appear in the meeting. Spell them exactly as written here:\n"
+        "- MLX\n- TeraSPIN\n- LABIX\n- Lefebvre")
+    assert dictionary.glossary({"terms": [], "corrections": {}}) == "No additional glossary provided."
+
+
+def test_glossary_reaches_both_report_prompts(monkeypatch):
+    from test_meeting import _FakeLLM
+    fake = _FakeLLM(monkeypatch)
+    monkeypatch.setattr(meeting, "CHUNK_TOKENS", 10)
+    text = "\n".join(f"[00:00:{i:02d}] one two three" for i in range(6))
+    meeting.summarize(text, "model", "", "fr", "- TeraSPIN")
+    assert len(fake.prompts) == 4 and all("## Glossary\n- TeraSPIN" in p for p in fake.prompts)
