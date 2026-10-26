@@ -81,7 +81,8 @@ SECTIONS = (
     ("Uncertain passages", r"uncertain|incertains"),
 )
 
-COLUMNS = ["model", "facts", "invented", "sections", "terms", "french", "words", "total_s", "output_tokens",
+COLUMNS = ["model", "facts", "invented", "sections", "terms", "french", "words", "write_s", "load_s",
+           "total_s", "output_tokens",
            "generation_tps", "prefill_tps", "mlx_peak_gb", "truncated", "telemetry_run", "error"]
 
 NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
@@ -127,12 +128,16 @@ def llm_metrics(events_path: Path, span_id: str) -> dict:
     llm_spans = [e for e in events if e["type"] == "span" and e["span_id"] in children | grandchildren
                  and e["name"] in ("notes_llm", "generation_llm")]
     calls = {e["span_id"] for e in llm_spans}
+    loading = [e for e in events if e["type"] == "span" and e["span_id"] in children | grandchildren
+               and e["name"] == "llm_loading"]
     values = {}
     for e in events:
         if e["type"] == "metric" and e.get("span_id") in calls:
             values.setdefault(e["name"], []).append(e["value"])
     return {
         "output_tokens": sum(e["attrs"].get("output_tokens", 0) for e in llm_spans),
+        "load_s": round(sum(e["duration_s"] for e in loading), 1),  # includes the download, if any
+        "write_s": round(sum(e["duration_s"] for e in llm_spans), 1),
         "generation_tps": round(sum(values.get("generation_tokens_per_s", [0])) /
                                 max(len(values.get("generation_tokens_per_s", [])), 1), 1),
         "prefill_tps": round(sum(values.get("prefill_tokens_per_s", [0])) /
@@ -206,7 +211,7 @@ def chart(results: list[dict], path: Path) -> None:
     rows = sorted([r for r in results if "error" not in r], key=lambda r: r["facts"])
     names = [r["model"].split("/")[-1].replace("-4bit", "") for r in rows]
     panels = (("facts", "Facts covered (%)", 100), ("invented", "Invented numbers", 1),
-              ("total_s", "Time to write (s)", 1), ("generation_tps", "Writing speed (tokens/s)", 1))
+              ("write_s", "Time to write (s)", 1), ("generation_tps", "Writing speed (tokens/s)", 1))
     fig, axes = plt.subplots(1, len(panels), figsize=(14, 0.45 * len(rows) + 1.6), sharey=True)
     for ax, (key, title, factor) in zip(axes, panels):
         values = [r[key] * factor for r in rows]
