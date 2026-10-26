@@ -21,8 +21,11 @@ case-insensitive):
                {"label": "PRISMA method", "patterns": ["prisma"]}]}
 
 Each run is recorded with the project's telemetry (telemetry/<date>_report_comparison_<id>/):
-the reports, results.csv, outputs.jsonl and report_comparison.png. With --free-disk, a model
-downloaded for the comparison is removed from the Hugging Face cache once it has been scored.
+the reports, results.csv, outputs.jsonl and report_comparison.png, saved again after each model.
+With --free-disk, a model downloaded for the comparison is removed from the Hugging Face cache
+once it has been scored. After an interruption, --resume <that folder> skips the models already
+scored and retries the failed ones; the new measurements go to a new telemetry run, and the
+results stay together in the first folder.
 """
 
 import argparse
@@ -77,6 +80,9 @@ SECTIONS = (
     ("Open questions", r"open questions|questions ouvertes"),
     ("Uncertain passages", r"uncertain|incertains"),
 )
+
+COLUMNS = ["model", "facts", "invented", "sections", "terms", "french", "words", "total_s", "output_tokens",
+           "generation_tps", "prefill_tps", "mlx_peak_gb", "truncated", "telemetry_run", "error"]
 
 NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
 FRENCH = {"le", "la", "les", "des", "est", "une", "dans", "pour", "que", "qui", "sur", "avec", "pas"}
@@ -150,6 +156,52 @@ def remove_from_cache(repo: str) -> None:
         cache.delete_revisions(*hashes).execute()
 
 
+def model_spans(events_path: Path) -> dict[str, dict]:
+    """The last completed model_report span of each model in a run."""
+    if not events_path.exists():
+        return {}
+    spans = {}
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        e = json.loads(line)
+        if e["type"] == "span" and e["name"] == "model_report" and e["status"] == "ok":
+            spans[e["attrs"]["model"]] = e
+    return spans
+
+
+def previous_results(folder: Path, transcript: str, facts: list[dict], terms: list[str]) -> dict[str, dict]:
+    """Results already in a comparison folder, to resume it. Models scored before outputs.jsonl was
+    saved after each model are rebuilt from their saved report and the folder's telemetry."""
+    results = {}
+    outputs = folder / "outputs.jsonl"
+    if outputs.exists():
+        for line in outputs.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            results[row["model"]] = row
+    events_path = folder / "events.jsonl"
+    for model, sp in model_spans(events_path).items():
+        report = folder / "reports" / (model.split("/")[-1] + ".md")
+        if model in results and "error" not in results[model] or not report.exists():
+            continue
+        row = {"model": model, "telemetry_run": folder.name.rsplit("_", 1)[-1],
+               "total_s": round(sp["duration_s"], 1)}
+        row.update(score(report.read_text(encoding="utf-8"), transcript, facts, terms))
+        row.update(llm_metrics(events_path, sp["span_id"]))
+        results[model] = row
+    print(f"Resuming {folder.name}: {sum('error' not in r for r in results.values())} model(s) already scored")
+    return results
+
+
+def save(folder: Path, results: list[dict]) -> None:
+    with open(folder / "outputs.jsonl", "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in results)
+    with open(folder / "results.csv", "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(results)
+    if any("error" not in r for r in results):
+        chart(results, folder / "report_comparison.png")
+
+
 def chart(results: list[dict], path: Path) -> None:
     rows = sorted([r for r in results if "error" not in r], key=lambda r: r["facts"])
     names = [r["model"].split("/")[-1].replace("-4bit", "") for r in rows]
@@ -182,6 +234,8 @@ def main() -> None:
     p.add_argument("--report-context", default="")
     p.add_argument("--free-disk", action="store_true",
                    help="remove each model downloaded for the comparison from the cache once scored")
+    p.add_argument("--resume", type=Path, metavar="FOLDER",
+                   help="continue a comparison folder: skip models already scored, retry failed ones")
     p.add_argument("--telemetry-directory", type=Path, default=ROOT / "telemetry")
     args = p.parse_args()
 
@@ -197,16 +251,23 @@ def main() -> None:
     glossary = dictionary_file.glossary(d)
     terms = list(dict.fromkeys(d["terms"] + list(d["corrections"].values())))
 
-    results = []
+    out = args.resume or None
+    results = previous_results(out, transcript, facts, terms) if out else {}
     # The transcript, facts and dictionary may be private: only counts are tagged.
     with Telemetry("report_comparison", directory=args.telemetry_directory,
-                   tags={"models": len(args.models), "facts": len(facts), "terms": len(terms)},
+                   tags={"models": len(args.models), "facts": len(facts), "terms": len(terms),
+                         "resumed": bool(out)},
                    command=["report_comparison.py", "<redacted>"]) as t:
-        (t.directory / "reports").mkdir()
-        shutil.copy(args.transcript, t.directory / "transcript.md")
+        out = out or t.directory  # a resumed comparison keeps its results in its first folder
+        (out / "reports").mkdir(exist_ok=True)
+        if not (out / "transcript.md").exists():
+            shutil.copy(args.transcript, out / "transcript.md")
         for model in args.models:
+            if model in results and "error" not in results[model]:
+                print(f"\n=== {model}: already scored, skipped")
+                continue
             was_cached = cached(model)
-            row = {"model": model}
+            row = {"model": model, "telemetry_run": t.id}
             print(f"\n=== {model}{'' if was_cached else ' (download)'}")
             try:
                 with span("model_report", agent="llm", model=model) as s:
@@ -214,10 +275,12 @@ def main() -> None:
                     report = meeting.summarize(text, model, args.report_context, args.language, glossary)
                     row["total_s"] = round(time.time() - t0, 1)
                     s["report_chars"] = len(report)
-                (t.directory / "reports" / (model.split("/")[-1] + ".md")).write_text(report, encoding="utf-8")
+                (out / "reports" / (model.split("/")[-1] + ".md")).write_text(report, encoding="utf-8")
                 row.update(score(report, transcript, facts, terms))
                 for name in ("facts", "invented", "sections", "terms", "french"):
                     metric(f"report_{name}", row[name], model=model)
+                events_path = t.directory / "events.jsonl"
+                row.update(llm_metrics(events_path, model_spans(events_path)[model]["span_id"]))
             except Exception as e:
                 row["error"] = repr(e)
                 traceback.print_exc()
@@ -227,32 +290,13 @@ def main() -> None:
                 if args.free_disk and not was_cached:
                     remove_from_cache(model)
                     print(f"   removed {model} from the cache")
-            results.append(row)
+            results[model] = row
+            save(out, [results[m] for m in args.models if m in results])  # an interruption loses one model at most
             if "error" not in row:
                 print(f"   facts {row['facts']:.0%}  invented {row['invented']}  sections {row['sections']}/10"
                       f"  terms {row['terms']}/{len(terms)}  french {row['french']:.0%}  {row['total_s']} s")
-
-    # Speeds and tokens come from the spans meeting.summarize logged under each model's span.
-    events_path = t.directory / "events.jsonl"
-    spans = {json.loads(line)["attrs"].get("model"): json.loads(line)["span_id"]
-             for line in events_path.read_text(encoding="utf-8").splitlines()
-             if json.loads(line)["type"] == "span" and json.loads(line)["name"] == "model_report"}
-    for row in results:
-        if "error" not in row and row["model"] in spans:
-            row.update(llm_metrics(events_path, spans[row["model"]]))
-
-    with open(t.directory / "outputs.jsonl", "w", encoding="utf-8") as f:
-        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in results)
-    columns = ["model", "facts", "invented", "sections", "terms", "french", "words", "total_s",
-               "output_tokens", "generation_tps", "prefill_tps", "mlx_peak_gb", "truncated", "error"]
-    with open(t.directory / "results.csv", "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(results)
-    if any("error" not in r for r in results):
-        chart(results, t.directory / "report_comparison.png")
-    print(f"\n📁 {t.directory}")
-
+        save(out, [results[m] for m in args.models if m in results])
+    print(f"\n📁 {out}")
 
 if __name__ == "__main__":
     main()
