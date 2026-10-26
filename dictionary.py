@@ -49,3 +49,25 @@ def apply_corrections(segments: list[dict], corrections: dict) -> int:
             s["whisper_text"], s["text"] = s["text"], text
             total += n
     return total
+
+
+# Whisper keeps at most 223 prompt tokens and drops the beginning beyond that. French names and
+# jargon measured at about 2.6 characters per token, so this budget stays under the limit even
+# for denser terms (2 characters per token).
+PROMPT_MAX_CHARS = 400
+
+
+def prompt_terms(terms: list[str], vocabulary: str | None = None) -> list[str]:
+    """The terms sent to Whisper: --vocabulary first, then the dictionary, within PROMPT_MAX_CHARS."""
+    extra = [t.strip() for t in (vocabulary or "").split(",") if t.strip()]
+    kept, size = [], 0
+    for term in dict.fromkeys(extra + terms):  # removes duplicates, keeps order
+        if size + len(term) + 2 > PROMPT_MAX_CHARS:
+            break
+        kept.append(term)
+        size += len(term) + 2
+    return kept
+
+
+def whisper_prompt(terms: list[str]) -> str | None:
+    return ", ".join(terms) + "." if terms else None

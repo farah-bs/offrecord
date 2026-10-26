@@ -112,26 +112,56 @@ def load_audio(path: Path) -> np.ndarray:
 
 # ---------------------------------------------------------------- transcription
 
-def transcribe(audio: np.ndarray, model: str, language: str | None, vocabulary: str | None) -> list[dict]:
+# With condition_on_previous_text=False, Whisper uses the prompt for the first 30-second window
+# only. When there is a prompt, the audio is transcribed in blocks of about this length, each
+# with the prompt, so that terms are recognized throughout the meeting.
+BLOCK_S = 300
+CUT_SEARCH_S = 10  # each cut is placed at the quietest moment within this distance of the target
+
+
+def audio_blocks(audio: np.ndarray, block_s: float | None = None) -> list[tuple[int, int]]:
+    """(start, end) sample ranges of about block_s seconds, cut at the quietest 0.1 s nearby."""
+    block = int((block_s or BLOCK_S) * SR)
+    frame, search = SR // 10, CUT_SEARCH_S * SR
+    cuts, target = [0], block
+    while len(audio) - target > 30 * SR:  # no block shorter than 30 s at the end
+        lo = max(cuts[-1] + frame, target - search)
+        window = audio[lo:target + search]
+        n = len(window) // frame
+        energy = (window[:n * frame].reshape(n, frame) ** 2).mean(axis=1)
+        cuts.append(lo + int(energy.argmin()) * frame + frame // 2)
+        target = cuts[-1] + block
+    return list(zip(cuts, cuts[1:] + [len(audio)]))
+
+
+def transcribe(audio: np.ndarray, model: str, language: str | None, prompt: str | None) -> list[dict]:
     import mlx_whisper
 
     print(f"\n📝 Transcribing with {model} (first run: model download)...")
-    res = mlx_whisper.transcribe(
-        audio,
-        path_or_hf_repo=model,
-        language=language,
-        initial_prompt=vocabulary,
-        condition_on_previous_text=False,  # Limit repetition loops.
-        verbose=False,
-    )
-    segments = []
-    for s in res["segments"]:
-        text = s["text"].strip()
-        if not text or any(h in text.lower() for h in HALLUCINATIONS):
-            continue
-        segments.append({"start": float(s["start"]), "end": float(s["end"]), "text": text})
-    metric("raw_segments", len(res["segments"]))
-    metric("filtered_segments", len(res["segments"]) - len(segments))
+    blocks = audio_blocks(audio) if prompt else [(0, None)]
+    metric("whisper_blocks", len(blocks))
+    raw, segments = 0, []
+    for i, (a, b) in enumerate(blocks, 1):
+        if len(blocks) > 1:
+            print(f"   block {i}/{len(blocks)}...")
+        res = mlx_whisper.transcribe(
+            audio[a:b] if b else audio,
+            path_or_hf_repo=model,
+            language=language,
+            initial_prompt=prompt,
+            condition_on_previous_text=False,  # Limit repetition loops.
+            verbose=False,
+        )
+        offset = a / SR
+        raw += len(res["segments"])
+        for s in res["segments"]:
+            text = s["text"].strip()
+            if not text or any(h in text.lower() for h in HALLUCINATIONS):
+                continue
+            segments.append({"start": float(s["start"]) + offset, "end": float(s["end"]) + offset,
+                             "text": text})
+    metric("raw_segments", raw)
+    metric("filtered_segments", raw - len(segments))
     return segments
 
 
@@ -439,9 +469,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if len(audio) < SR:
         sys.exit("Audio too short or empty: check microphone access.")
 
+    terms = dictionary_file.prompt_terms(dictionary["terms"], args.vocabulary)
+    metric("prompt_terms", len(terms))
     t0 = time.time()
     with span("transcript", agent="whisper", model=args.whisper_model, language=args.language) as s:
-        segments = transcribe(audio, args.whisper_model, args.language, args.vocabulary)
+        segments = transcribe(audio, args.whisper_model, args.language,
+                              dictionary_file.whisper_prompt(terms))
         s["segments"] = len(segments)
         # compute time / audio duration: below 1 means faster than real time
         metric("rtf", (time.time() - t0) / audio_duration)
