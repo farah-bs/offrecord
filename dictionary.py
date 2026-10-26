@@ -13,6 +13,8 @@ corrections  wrong -> right replacements applied to the transcript, whole words 
 
 import json
 import re
+from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -81,3 +83,65 @@ def glossary(dictionary: dict, vocabulary: str | None = None) -> str:
         return "No additional glossary provided."
     return ("Names and terms that may appear in the meeting. Spell them exactly as written here:\n"
             + "\n".join(f"- {t}" for t in terms))
+
+
+# ---------------------------------------------------------------- learning from hand corrections
+
+WORD = re.compile(r"\w+(?:[-'’]\w+)*")
+HEADER = re.compile(r"^(# .*|\*\*.*\*\* \[\d\d:\d\d:\d\d\])$")  # title and speaker lines
+TIMESTAMP = re.compile(r"^\[\d\d:\d\d:\d\d\] ")
+MAX_RULE_WORDS = 3  # longer rewrites are edits of meaning, not recognition errors
+MIN_SIMILARITY = 0.5  # misheard words are spelled alike: "Lefebre" / "Lefebvre" is 0.93
+
+
+def words(text: str) -> list[str]:
+    """Words without punctuation: punctuation edits are not recognition errors."""
+    return WORD.findall(text)
+
+
+def transcript_words(markdown: str) -> list[str]:
+    """Words of a transcript.md, without its title, speaker names and timestamps."""
+    lines = (TIMESTAMP.sub("", line) for line in markdown.splitlines() if not HEADER.match(line.strip()))
+    return words("\n".join(lines))
+
+
+def _opcodes(a: list[str], b: list[str]):
+    return SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+
+
+def _similarity(a: str, b: str) -> float:
+    """Spelling similarity, ignoring case, spaces and hyphens."""
+    def norm(t):
+        return re.sub(r"[\s-]", "", t.lower())
+    return SequenceMatcher(None, norm(a), norm(b)).ratio()
+
+
+def word_error_rate(reference: list[str], hypothesis: list[str]) -> float:
+    """Substituted, inserted and deleted words over the reference length, ignoring case."""
+    ref, hyp = [w.lower() for w in reference], [w.lower() for w in hypothesis]
+    errors = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in _opcodes(hyp, ref) if op != "equal")
+    return errors / max(len(ref), 1)
+
+
+def _looks_like_a_term(text: str) -> bool:
+    """Names, acronyms and jargon: an uppercase letter, a digit or a hyphen."""
+    return any(c.isupper() or c.isdigit() or c == "-" for c in text)
+
+
+def propose(original: list[str], edited: list[str], dictionary: dict) -> tuple[list, list]:
+    """New corrections and terms suggested by the differences between two versions of a transcript.
+
+    Returns ([(wrong, right, count)], [(term, count)]), most frequent first."""
+    corrections, terms = Counter(), Counter()
+    for op, i1, i2, j1, j2 in _opcodes(original, edited):
+        wrong, right = " ".join(original[i1:i2]), " ".join(edited[j1:j2])
+        if op == "equal" or max(i2 - i1, j2 - j1) > MAX_RULE_WORDS:
+            continue
+        if op == "replace":
+            if _similarity(wrong, right) < MIN_SIMILARITY:
+                continue  # a rewrite, not a misheard word
+            if dictionary["corrections"].get(wrong) != right:
+                corrections[wrong, right] += 1
+        if op != "delete" and _looks_like_a_term(right) and right not in dictionary["terms"]:
+            terms[right] += 1
+    return ([(w, r, n) for (w, r), n in corrections.most_common()], terms.most_common())

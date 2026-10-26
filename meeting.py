@@ -5,6 +5,7 @@ Usage:
     python meeting.py                         # record from the microphone, press Enter to stop, then transcribe
     python meeting.py --file meeting.m4a      # transcribe an existing file
     python meeting.py --speakers --report     # identify speakers and generate a meeting report
+    python meeting.py learn Meetings/<dir>    # learn dictionary rules from a transcript corrected by hand
 
 Everything runs locally: Whisper through MLX, pyannote for speakers, and an MLX LLM for the report. No audio leaves the machine."""
 
@@ -395,9 +396,85 @@ def summarize(text: str, model: str, report_context: str, language: str | None,
                      "order:\n\n" + merged, REPORT_MAX_TOKENS, "generation_llm", model=model)
 
 
+# ---------------------------------------------------------------- learning from corrections
+
+def ask(question: str) -> str:
+    """'y', 'n' or 'q' (quit), asked until the answer is one of them."""
+    while True:
+        answer = input(f"{question} [y/n/q] ").strip().lower()[:1]
+        if answer in ("y", "n", "q"):
+            return answer
+
+
+def learn(argv: list[str]) -> None:
+    p = argparse.ArgumentParser(prog="meeting.py learn",
+                                description="Learn dictionary rules from a transcript corrected by hand")
+    p.add_argument("meeting", type=Path, help="meeting directory, with segments.json and the edited transcript.md")
+    p.add_argument("--dictionary", type=Path, default=DEFAULT_DICTIONARY)
+    p.add_argument("--no-telemetry", action="store_true")
+    p.add_argument("--telemetry-directory", type=Path,
+                   default=Path(__file__).resolve().parent / "telemetry")
+    args = p.parse_args(argv)
+
+    segments = json.loads((args.meeting / "segments.json").read_text(encoding="utf-8"))
+    edited = dictionary_file.transcript_words((args.meeting / "transcript.md").read_text(encoding="utf-8"))
+    pipeline = dictionary_file.words(" ".join(s["text"] for s in segments))
+    whisper = dictionary_file.words(" ".join(s.get("whisper_text", s["text"]) for s in segments))
+    path = args.dictionary.expanduser()
+    dictionary = dictionary_file.load(path)
+
+    if args.no_telemetry:
+        context = nullcontext()
+    else:
+        # Only the meeting date: the directory name may contain a private title.
+        context = Telemetry("learn", directory=args.telemetry_directory,
+                            tags={"meeting_date": args.meeting.resolve().name[:10]},
+                            command=["meeting.py", "learn", "<redacted>"])
+    with context:
+        wer, wer_whisper = (dictionary_file.word_error_rate(edited, pipeline),
+                            dictionary_file.word_error_rate(edited, whisper))
+        metric("words", len(edited))
+        metric("wer", wer)                  # transcript as produced, dictionary included
+        metric("wer_whisper", wer_whisper)  # Whisper output, before the correction pass
+        print(f"Word error rate: {wer:.1%} ({wer_whisper:.1%} before the dictionary corrections) "
+              f"over {len(edited)} words")
+
+        corrections, terms = dictionary_file.propose(pipeline, edited, dictionary)
+        metric("proposed", len(corrections) + len(terms))
+        if not corrections and not terms:
+            print("No new correction or term found.")
+            return
+        print("\nAccept a rule only if it is always right: it will apply to every future transcript.")
+        accepted, new_terms = 0, []
+        for wrong, right, n in corrections:
+            answer = ask(f'  correction  "{wrong}" -> "{right}"  ({n}x)')
+            if answer == "q":
+                break
+            if answer == "y":
+                dictionary["corrections"][wrong] = right
+                accepted += 1
+        else:
+            for term, n in terms:
+                answer = ask(f'  term        "{term}"  ({n}x)')
+                if answer == "q":
+                    break
+                if answer == "y":
+                    new_terms.append(term)
+        # New terms first: the Whisper prompt keeps the first terms when the list is too long.
+        dictionary["terms"] = new_terms + dictionary["terms"]
+        accepted += len(new_terms)
+        metric("accepted", accepted)
+        if accepted:
+            dictionary_file.save(dictionary, path)
+            print(f"✅ {accepted} rule(s) added to {path}")
+
+
 # ---------------------------------------------------------------- main program
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["learn"]:
+        return learn(argv[1:])
     p = argparse.ArgumentParser(description="Local meeting transcript")
     p.add_argument("--file", type=Path, help="existing audio file (otherwise: microphone recording)")
     p.add_argument("--title", default="", help="short title, added to the directory name")

@@ -17,3 +17,15 @@ def test_comparison_includes_run_summary(telemetry_run, tmp_path):
     assert set(summary["name"]) == {"parent", "child", "broken"}
     assert summary.loc[summary["name"] == "broken", "errors"].item() == 1
     assert (tmp_path / "_comparison" / "run_summary.csv").exists()
+
+
+def test_transcript_quality_charts_learn_runs(tmp_path):
+    from telemetry import Telemetry, metric
+    for date, wer in (("2026-10-20", 0.12), ("2026-10-26", 0.08)):
+        with Telemetry("learn", directory=tmp_path / "telemetry", interval=0.1, tags={"meeting_date": date}):
+            metric("wer", wer)
+            metric("wer_whisper", wer + 0.02)
+    comparison(load_runs(tmp_path / "telemetry"), tmp_path / "_comparison")
+    assert (tmp_path / "_comparison" / "transcript_quality.png").exists()
+    csv = (tmp_path / "_comparison" / "transcript_quality.csv").read_text().splitlines()
+    assert csv[0] == "tag_meeting_date,wer,wer_whisper" and csv[2].startswith("2026-10-26,8.0")

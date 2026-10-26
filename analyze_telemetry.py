@@ -295,12 +295,44 @@ def evolution_by_run(spans: pd.DataFrame, runs: pd.DataFrame, output: Path) -> P
     return path
 
 
+def transcript_quality(d: dict, output: Path) -> Path | None:
+    """Word error rate of each hand-corrected meeting (`meeting.py learn` runs), by meeting date."""
+    path = output / "transcript_quality.png"
+    metrics, runs = d["metrics"], d["runs"]
+    if metrics.empty or "tag_meeting_date" not in runs:
+        path.unlink(missing_ok=True)
+        return None
+    wer = metrics[metrics["name"].isin(["wer", "wer_whisper"])]
+    if wer.empty:
+        path.unlink(missing_ok=True)
+        return None
+    table = (wer.merge(runs[["run_id", "start", "tag_meeting_date"]], on="run_id")
+             .sort_values("start").groupby(["tag_meeting_date", "name"])["value"].last()
+             .unstack().sort_index() * 100)  # the latest learn run of each meeting
+    table.to_csv(output / "transcript_quality.csv")
+    fig, ax = plt.subplots(figsize=(max(7, 0.5 * len(table) + 3), 3.5))
+    for color, name, label in ((SERIES[0], "wer", "after corrections"), (SERIES[1], "wer_whisper", "before corrections")):
+        if name in table:
+            ax.plot(range(len(table)), table[name], color=color, label=label, marker="o", markersize=5)
+    ax.set_xticks(range(len(table)), table.index, fontsize=8)
+    ax.set_xlabel("meeting")
+    ax.set_ylabel("Word error rate (%)")
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8)
+    ax.set_title("Transcript errors left for hand correction", loc="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
 def comparison(d: dict, output: Path) -> pd.DataFrame | None:
     """All runs together: which steps cost what, and how they change."""
     r = _tables_and_charts(d, output)
     run_summary(d).to_csv(output / "run_summary.csv", index=False)
     if not d["spans"].empty:
         evolution_by_run(d["spans"], d["runs"], output)
+    transcript_quality(d, output)
     return r
 
 
