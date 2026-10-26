@@ -51,12 +51,13 @@ def test_prompt_terms_put_vocabulary_first_and_fit_the_budget(monkeypatch):
 def test_audio_blocks_cut_at_silence_and_cover_everything():
     sr = meeting.SR
     audio = np.ones(sr * 100, dtype=np.float32)
-    audio[int(sr * 41.5):int(sr * 41.6)] = 0  # silence 1.5 s after the 40 s target
-    blocks = meeting.audio_blocks(audio, block_s=40)
+    audio[int(sr * 27.5):int(sr * 27.6)] = 0  # silence within the last 6 s of the first block
+    blocks = meeting.audio_blocks(audio, block_s=30)
     assert blocks[0][0] == 0 and blocks[-1][1] == len(audio)
     assert all(a == b for (_, a), (b, _) in zip(blocks, blocks[1:]))
-    assert abs(blocks[0][1] / sr - 41.55) < 0.06
-    assert len(blocks) == 2  # the remaining 18 s after the second target join the last block
+    assert abs(blocks[0][1] / sr - 27.55) < 0.06
+    assert all(b - a <= 30 * sr for a, b in blocks), "a block longer than one window loses the prompt"
+    assert len(blocks) == 4
 
 
 def test_prompt_is_sent_to_every_block_with_realigned_timestamps(monkeypatch, wav_file, tmp_path,

@@ -114,24 +114,23 @@ def load_audio(path: Path) -> np.ndarray:
 # ---------------------------------------------------------------- transcription
 
 # With condition_on_previous_text=False, Whisper uses the prompt for the first 30-second window
-# only. When there is a prompt, the audio is transcribed in blocks of about this length, each
-# with the prompt, so that terms are recognized throughout the meeting.
-BLOCK_S = 300
-CUT_SEARCH_S = 10  # each cut is placed at the quietest moment within this distance of the target
+# of each call only. When there is a prompt, the audio is transcribed in blocks of at most one
+# window, each with the prompt, so that terms are recognized throughout the meeting.
+BLOCK_S = 30
+CUT_SEARCH_S = 6  # each block ends at the quietest moment of its last CUT_SEARCH_S seconds
 
 
 def audio_blocks(audio: np.ndarray, block_s: float | None = None) -> list[tuple[int, int]]:
-    """(start, end) sample ranges of about block_s seconds, cut at the quietest 0.1 s nearby."""
+    """(start, end) sample ranges of at most block_s seconds, each ending at the quietest 0.1 s
+    of its last CUT_SEARCH_S seconds, so that words are not cut in half."""
     block = int((block_s or BLOCK_S) * SR)
     frame, search = SR // 10, CUT_SEARCH_S * SR
-    cuts, target = [0], block
-    while len(audio) - target > 30 * SR:  # no block shorter than 30 s at the end
-        lo = max(cuts[-1] + frame, target - search)
-        window = audio[lo:target + search]
-        n = len(window) // frame
-        energy = (window[:n * frame].reshape(n, frame) ** 2).mean(axis=1)
+    cuts = [0]
+    while len(audio) - cuts[-1] > block:
+        lo = cuts[-1] + block - search
+        n = search // frame
+        energy = (audio[lo:lo + n * frame].reshape(n, frame) ** 2).mean(axis=1)
         cuts.append(lo + int(energy.argmin()) * frame + frame // 2)
-        target = cuts[-1] + block
     return list(zip(cuts, cuts[1:] + [len(audio)]))
 
 
@@ -144,14 +143,14 @@ def transcribe(audio: np.ndarray, model: str, language: str | None, prompt: str 
     raw, segments = 0, []
     for i, (a, b) in enumerate(blocks, 1):
         if len(blocks) > 1:
-            print(f"   block {i}/{len(blocks)}...")
+            print(f"\r   block {i}/{len(blocks)}...", end="", flush=True)
         res = mlx_whisper.transcribe(
             audio[a:b] if b else audio,
             path_or_hf_repo=model,
             language=language,
             initial_prompt=prompt,
             condition_on_previous_text=False,  # Limit repetition loops.
-            verbose=False,
+            verbose=False if len(blocks) == 1 else None,  # None: no progress bar for each block
         )
         offset = a / SR
         raw += len(res["segments"])
@@ -161,6 +160,8 @@ def transcribe(audio: np.ndarray, model: str, language: str | None, prompt: str 
                 continue
             segments.append({"start": float(s["start"]) + offset, "end": float(s["end"]) + offset,
                              "text": text})
+    if len(blocks) > 1:
+        print()
     metric("raw_segments", raw)
     metric("filtered_segments", raw - len(segments))
     return segments
