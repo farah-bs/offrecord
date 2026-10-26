@@ -132,3 +132,26 @@ def test_long_transcript_is_reported_with_map_reduce(monkeypatch):
     notes, final = fake.prompts[:3], fake.prompts[3]
     assert all("part" in p and "of 3" in p for p in notes)
     assert "reply 1" in final and "reply 3" in final and "Write the report in English" in final
+
+
+def test_private_inputs_stay_out_of_telemetry(fake_whisper, wav_file, tmp_path, monkeypatch):
+    monkeypatch.setattr(meeting, "summarize", lambda *args: "report")
+    secret_audio = wav_file.rename(tmp_path / "Camille-private-review.wav")
+    argv = ["--file", str(secret_audio), "--report", "--report-context=Supervisor: Hélène",
+            "--vocabulary", "TeraSPIN", "--directory", str(tmp_path / "Meetings"),
+            "--telemetry-directory", str(tmp_path / "telemetry")]
+    monkeypatch.setattr(sys, "argv", ["meeting.py", *argv])
+    meeting.main(argv)
+
+    (run,) = [p for p in (tmp_path / "telemetry").iterdir() if not p.name.startswith("_")]
+    for name in ("run.json", "events.jsonl"):
+        content = (run / name).read_text()
+        for private in ("Camille", "Hélène", "H\\u00e9l\\u00e8ne", "TeraSPIN"):
+            assert private not in content, f"{private!r} leaked into {name}"
+
+
+def test_redacted_command():
+    assert meeting.redacted_command(["meeting.py", "--file", "a.m4a", "--report-context=x", "--report",
+                                     "--vocabulary", "y", "--language", "fr"]) == [
+        "meeting.py", "--file", "<redacted>", "--report-context=<redacted>", "--report",
+        "--vocabulary", "<redacted>", "--language", "fr"]

@@ -169,6 +169,9 @@ By default, results are written to `Meetings/YYYY-MM-DD_HHhMM[_title]/`. Each ru
 ## Telemetry and reports
 
 Telemetry is enabled by default and recorded in `telemetry/<date>_meeting_<id>/`. It remains local and includes `run.json`, `events.jsonl`, and `samples.jsonl`.
+The values of `--file`, `--report-context`, and `--vocabulary` are never written to telemetry:
+they are redacted from the recorded command line and left out of the run tags (only the audio
+format is kept). Use `--telemetry-directory` to store runs somewhere else.
 
 Disable measurement for a run:
 

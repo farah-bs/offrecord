@@ -199,10 +199,12 @@ def _sampler(pid: int, path: str, interval: float) -> None:
 
 class Telemetry:
     def __init__(self, name: str, directory: Path | str = "telemetry", interval: float = 1.0,
-                 tags: dict | None = None):
+                 tags: dict | None = None, command: list[str] | None = None):
+        """`command` replaces sys.argv in run.json, e.g. with private arguments redacted."""
         self.name = name
         self.interval = interval
         self.tags = tags or {}
+        self.command = command
         self.id = uuid.uuid4().hex[:8]
         timestamp = dt.datetime.now().strftime("%Y-%m-%d_%Hh%M%S")
         self.directory = Path(directory) / f"{timestamp}_{name}_{self.id}"
@@ -262,7 +264,7 @@ class Telemetry:
             "id": self.id,
             "name": self.name,
             "tags": self.tags,
-            "command": sys.argv,
+            "command": self.command if self.command is not None else sys.argv,
             "git_commit": _command("git", "rev-parse", "--short", "HEAD", cwd=root),
             "git_modified": bool(git_status) if git_status is not None else None,
             "machine": {

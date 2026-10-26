@@ -48,6 +48,9 @@ HALLUCINATIONS = (
 # Language the report is written in, from the --language code.
 REPORT_LANGUAGES = {"fr": "French", "en": "English"}
 
+# Options whose values may identify people or projects: never written to telemetry.
+PRIVATE_OPTIONS = ("--file", "--report-context", "--vocabulary")
+
 # Failures of optional steps that come from the environment, not from a bug: missing package,
 # refused model access, download or disk problem. Anything else also prints its traceback.
 EXPECTED_ERRORS = (ImportError, RuntimeError, OSError)
@@ -172,6 +175,21 @@ def assign_speakers(segments: list[dict], speaker_turns: list[tuple]) -> None:
 
 
 # ---------------------------------------------------------------- formatting
+
+def redacted_command(argv: list[str]) -> list[str]:
+    """argv with the values of PRIVATE_OPTIONS replaced, for both `--opt value` and `--opt=value`."""
+    out, hide_next = [], False
+    for arg in argv:
+        option = arg.split("=", 1)[0]
+        if hide_next:
+            out.append("<redacted>")
+        elif "=" in arg and option in PRIVATE_OPTIONS:
+            out.append(f"{option}=<redacted>")
+        else:
+            out.append(arg)
+        hide_next = arg in PRIVATE_OPTIONS
+    return out
+
 
 def optional_step_failed(step: str, error: Exception, consequence: str) -> None:
     print(f"⚠️  {step} unavailable ({error}). {consequence}")
@@ -372,9 +390,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.no_telemetry:
         context = nullcontext()
     else:
-        context = Telemetry("meeting", directory=args.telemetry_directory,
-                              tags={k: v for k, v in vars(args).items()
-                                    if k != "report_context" and v not in (None, False, "")})
+        private = {opt.lstrip("-").replace("-", "_") for opt in PRIVATE_OPTIONS}
+        tags = {k: v for k, v in vars(args).items() if k not in private and v not in (None, False, "")}
+        if args.file:
+            tags["audio_format"] = args.file.suffix.lower()
+        context = Telemetry("meeting", directory=args.telemetry_directory, tags=tags,
+                            command=redacted_command(sys.argv))
     with context:
         run_pipeline(args)
 
@@ -401,7 +422,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         with span("recording", agent="audio"):
             record(source)
 
-    with span("audio_loading", agent="audio", file=source.name):
+    with span("audio_loading", agent="audio", format=source.suffix.lower()):
         audio = load_audio(source)
     audio_duration = len(audio) / SR
     metric("audio_duration_s", audio_duration)
