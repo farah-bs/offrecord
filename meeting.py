@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -348,11 +349,24 @@ def split_transcript(text: str, count_tokens, max_tokens: int | None = None) -> 
     return parts
 
 
+def chat_prompt(tokenizer, system: str, user: str) -> str:
+    """The model's chat prompt. Some templates (Gemma, older Mistral) refuse a system message: it is
+    then put at the start of the user message. enable_thinking=False keeps Qwen3 from writing its
+    reasoning first; other templates ignore it."""
+    try:
+        return tokenizer.apply_chat_template(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            add_generation_prompt=True, tokenize=False, enable_thinking=False)
+    except Exception:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": system + "\n\n" + user}],
+            add_generation_prompt=True, tokenize=False, enable_thinking=False)
+
+
 def _generate(llm, tokenizer, system: str, user: str, max_tokens: int, step: str, **attrs) -> str:
     from mlx_lm import stream_generate
 
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    prompt = chat_prompt(tokenizer, system, user)
     with span(step, max_tokens=max_tokens, **attrs) as s:
         chunks, r = [], None
         for r in stream_generate(llm, tokenizer, prompt, max_tokens=max_tokens):
@@ -364,7 +378,8 @@ def _generate(llm, tokenizer, system: str, user: str, max_tokens: int, step: str
         if r.finish_reason == "length":
             event("truncated_output", step=step, output_tokens=r.generation_tokens, max_tokens=max_tokens)
             print(f"⚠️  {step}: output cut at {max_tokens} tokens, the end may be missing.")
-    return "".join(chunks).strip()
+    # Reasoning models may still write <think>...</think> before the answer.
+    return re.sub(r"<think>.*?</think>", "", "".join(chunks), flags=re.DOTALL).strip()
 
 
 def summarize(text: str, model: str, report_context: str, language: str | None,

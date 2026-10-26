@@ -155,3 +155,24 @@ def test_redacted_command():
                                      "--vocabulary", "y", "--dictionary", "d.json", "--language", "fr"]) == [
         "meeting.py", "--file", "<redacted>", "--report-context=<redacted>", "--report",
         "--vocabulary", "<redacted>", "--dictionary", "<redacted>", "--language", "fr"]
+
+
+def test_chat_prompt_moves_system_into_user_when_the_template_refuses_it():
+    class NoSystemTemplate:
+        def apply_chat_template(self, messages, **kwargs):
+            if messages[0]["role"] == "system":
+                raise ValueError("System role not supported")
+            assert kwargs["enable_thinking"] is False
+            return messages[0]["content"]
+
+    assert meeting.chat_prompt(NoSystemTemplate(), "rules", "transcript") == "rules\n\ntranscript"
+
+
+def test_reasoning_is_removed_from_the_report(monkeypatch):
+    fake = _FakeLLM(monkeypatch)
+    fake.stream_generate = lambda *a, **k: iter([types.SimpleNamespace(
+        text="<think>long reasoning</think>\n## Summary", prompt_tokens=1, generation_tokens=1,
+        prompt_tps=1.0, generation_tps=1.0, peak_memory=1.0, finish_reason="stop")])
+    monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace(
+        load=lambda model: ("llm", fake), stream_generate=fake.stream_generate))
+    assert meeting.summarize("[00:00:00] short", "model", "", "fr") == "## Summary"
