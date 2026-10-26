@@ -199,14 +199,29 @@ python analyze_telemetry.py --run ed6c3e64
 
 Reports are created in each run folder, with the global comparison in `telemetry/_comparison/`. The `spans.csv`, `step_summary.csv`, `timeline.png`, and other outputs allow comparison of duration, CPU, and memory by step.
 
+## Tests
+
+The tests run in a few seconds and download no model: Whisper, diarization, and the LLM are
+replaced by stubs.
+
+```bash
+python -m pip install pytest
+python -m pytest tests
+```
+
+They cover telemetry (spans, metrics, the sampler process, no-op mode), per-run and
+comparison reports, hallucination filtering, speaker assignment, the CLI end to end,
+language selection, the two-pass report, error reporting, and the privacy of telemetry.
+
 ## Layout
 
 ```text
 .
-├── meeting.py              # recording, transcription, and report CLI
+├── meeting.py             # recording, transcription, and report CLI
 ├── telemetry.py           # resource instrumentation and collection
 ├── analyze_telemetry.py   # CSV aggregation and charts
-├── Meetings/               # audio and text outputs
+├── tests/                 # pytest suite (no model download)
+├── Meetings/              # audio and text outputs
 └── telemetry/             # telemetry runs and reports
 ```
 
