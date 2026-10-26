@@ -12,3 +12,4 @@ dictionary.json
 
 # Clip lists describe private recordings.
 experiments/*.clips.json
+experiments/*.facts.json
