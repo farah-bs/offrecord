@@ -85,7 +85,7 @@ def record(wav_path: Path) -> None:
             pass
         while not q.empty():
             f.write(q.get())
-    print(f"\n\n✅ Audio recorded : {wav_path}")
+    print(f"\n\n✅ Audio recorded: {wav_path}")
 
 
 def load_audio(path: Path) -> np.ndarray:
@@ -153,11 +153,11 @@ def diarize(audio: np.ndarray, model: str, num_speakers: int | None) -> list[tup
 def assign_speakers(segments: list[dict], speaker_turns: list[tuple]) -> None:
     names: dict[str, str] = {}
     for s in segments:
-        best_speaker, recouvrement = None, 0.0
+        best_speaker, overlap = None, 0.0
         for a, b, spk in speaker_turns:
             r = min(s["end"], b) - max(s["start"], a)
-            if r > recouvrement:
-                best_speaker, recouvrement = spk, r
+            if r > overlap:
+                best_speaker, overlap = spk, r
         if best_speaker is None:
             s["speaker"] = "?"
             continue
@@ -263,20 +263,20 @@ def summarize(text: str, model: str, report_context: str, language: str | None) 
             context=report_context.strip() or "No additional context provided.",
             language=REPORT_LANGUAGES.get(language, "the language of the transcript"),
         )},
-        {"role": "user", "content": "Meeting transcript :\n\n" + text},
+        {"role": "user", "content": "Meeting transcript:\n\n" + text},
     ]
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
     with span("generation_llm", model=model, max_tokens=max_tokens) as s:
-        morceaux, r = [], None
+        chunks, r = [], None
         for r in stream_generate(llm, tokenizer, prompt, max_tokens=max_tokens):
-            morceaux.append(r.text)
+            chunks.append(r.text)
         s["input_tokens"], s["output_tokens"] = r.prompt_tokens, r.generation_tokens
         metric("prefill_tokens_per_s", r.prompt_tps)        # Implementation note.
         metric("generation_tokens_per_s", r.generation_tps)  # Implementation note.
         metric("mlx_peak_gb", r.peak_memory)
         if r.finish_reason == "length":
             event("truncated_output", output_tokens=r.generation_tokens, max_tokens=max_tokens)
-    return "".join(morceaux).strip()
+    return "".join(chunks).strip()
 
 
 # Implementation note.
@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             from analyze_telemetry import load_runs, run_report
             report = run_report(load_runs(context.directory.parent, run_id=context.id), context.id)
-            print(f"📊 Resources : {report}")
+            print(f"📊 Resources: {report}")
         except Exception as e:
             print(f"⚠️  Telemetry report unavailable ({e}). Raw measurements are in {context.directory}")
 
@@ -371,8 +371,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if args.report:
         try:
             with span("meeting_report", agent="llm", model=args.llm_model):
-                cr = summarize(text, args.llm_model, args.report_context, args.language)
-            (output / "meeting_report.md").write_text(f"# Meeting report: {name}\n\n{cr}\n", encoding="utf-8")
+                report_text = summarize(text, args.llm_model, args.report_context, args.language)
+            (output / "meeting_report.md").write_text(f"# Meeting report: {name}\n\n{report_text}\n", encoding="utf-8")
             print(f"✅ Meeting report: {output / 'meeting_report.md'}")
         except Exception as e:
             print(f"⚠️  Meeting report unavailable ({e}). The transcript was saved successfully.")

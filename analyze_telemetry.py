@@ -17,14 +17,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-GO = 1024 ** 3
+GB = 1024 ** 3
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]  # Implementation note.
-TEXTE, TEXTE_2, GRILLE, STEP_BACKGROUND = "#0b0b0b", "#52514e", "#e4e3df", "#f1f0ec"
+TEXT, TEXT_2, GRID, STEP_BACKGROUND = "#0b0b0b", "#52514e", "#e4e3df", "#f1f0ec"
 
 plt.rcParams.update({
     "figure.facecolor": "white", "axes.facecolor": "white", "savefig.dpi": 150,
-    "axes.edgecolor": GRILLE, "axes.labelcolor": TEXTE_2, "text.color": TEXTE,
-    "xtick.color": TEXTE_2, "ytick.color": TEXTE_2, "axes.grid": True, "grid.color": GRILLE,
+    "axes.edgecolor": GRID, "axes.labelcolor": TEXT_2, "text.color": TEXT,
+    "xtick.color": TEXT_2, "ytick.color": TEXT_2, "axes.grid": True, "grid.color": GRID,
     "grid.linewidth": 0.8, "axes.spines.top": False, "axes.spines.right": False,
     "lines.linewidth": 2, "legend.frameon": False, "font.size": 10,
 })
@@ -55,7 +55,7 @@ def load_runs(directory: Path | str = "telemetry", name: str | None = None,
         runs.append({"run_id": rid, "directory": str(d.parent), "name": meta["name"], "start": meta["start"],
                      "duration_s": meta.get("duration_s"), "status": meta["status"],
                      "git_commit": meta.get("git_commit"), "git_modified": meta.get("git_modified"),
-                     "chip": meta["machine"]["chip"], "ram_go": meta["machine"]["ram"] / GO,
+                     "chip": meta["machine"]["chip"], "ram_gb": meta["machine"]["ram"] / GB,
                      **{f"tag_{k}": v for k, v in meta.get("tags", {}).items()},
                      **{f"version_{k}": v for k, v in meta.get("packages", {}).items()}})
         events += [{"run_id": rid, "run_start": meta["start"], **e} for e in _jsonl(d.parent / "events.jsonl")]
@@ -88,10 +88,10 @@ def step_summary(spans: pd.DataFrame) -> pd.DataFrame:
     r = g["duration_s"].agg(n="count", average_duration_s="mean", p50_duration_s="median",
                          p95_duration_s=lambda x: x.quantile(0.95), max_duration_s="max")
     r["average_cpu_pct"] = g["average_cpu_pct"].mean()
-    r["rss_peak_gb"] = g["rss_peak"].max() / GO
+    r["rss_peak_gb"] = g["rss_peak"].max() / GB
     for col, output in (("gpu_memory_peak", "gpu_memory_peak_gb"), ("mlx_peak", "mlx_peak_gb")):
         if col in spans:
-            r[output] = g[col].max() / GO
+            r[output] = g[col].max() / GB
     if "average_gpu_util_pct" in spans:
         r["average_gpu_util_pct"] = g["average_gpu_util_pct"].mean()
     r["errors"] = g["status"].apply(lambda s: (s != "ok").sum())
@@ -108,16 +108,16 @@ def _step_bands(ax, spans_run: pd.DataFrame, labels: bool) -> None:
         ax.axvspan(a, b, color=STEP_BACKGROUND if i % 2 == 0 else "#e8e7e2", zorder=0, lw=0)
         if labels and (b - a) > 0.08 * total:  # Implementation note.
             ax.text((a + b) / 2, 1.02, s.name, transform=ax.get_xaxis_transform(),
-                    ha="center", va="bottom", fontsize=8, color=TEXTE_2, clip_on=False)
+                    ha="center", va="bottom", fontsize=8, color=TEXT_2, clip_on=False)
 
 
 def timeline(d: dict, run_id: str, output: Path) -> Path:
     smp = d["samples"][d["samples"]["run_id"] == run_id]
     spans_run = d["spans"][d["spans"]["run_id"] == run_id] if not d["spans"].empty else d["spans"]
     panels = [("Process CPU (cores)", [("process_cpu_pct", "process + children", 1 / 100)])]
-    memory = [(c, lbl, 1 / GO) for c, lbl in (("rss", "process (RSS)"), ("gpu_mem", "GPU (machine)"),
+    memory = [(c, lbl, 1 / GB) for c, lbl in (("rss", "process (RSS)"), ("gpu_mem", "GPU (machine)"),
                                               ("mlx_active", "MLX active")) if c in smp]
-    panels.append(("Memory (Go)", memory))
+    panels.append(("Memory (GB)", memory))
     if "gpu_util_pct" in smp:
         panels.append(("GPU utilization (%)", [("gpu_util_pct", "GPU (machine)", 1)]))
 
@@ -153,8 +153,8 @@ def duration_by_step(spans: pd.DataFrame, output: Path) -> Path:
     ax.barh(y, order.values, color=SERIES[0], height=0.55, zorder=2)
     for i, step in enumerate(order.index):
         v = spans.loc[spans["step"] == step, "duration_s"]
-        ax.scatter(v, [i] * len(v), s=14, color=TEXTE, zorder=3, linewidths=0)
-        ax.text(order[step], i, f"  {order[step]:.1f} s", va="center", fontsize=8, color=TEXTE_2)
+        ax.scatter(v, [i] * len(v), s=14, color=TEXT, zorder=3, linewidths=0)
+        ax.text(order[step], i, f"  {order[step]:.1f} s", va="center", fontsize=8, color=TEXT_2)
     ax.set_yticks(list(y), order.index, fontsize=9)
     ax.set_xlabel("Duration (s): bar = average, point = one run")
     ax.grid(axis="y", visible=False)
@@ -170,7 +170,7 @@ def memory_by_step(spans: pd.DataFrame, output: Path) -> Path:
     spans = spans.assign(step=spans.apply(_label, axis=1))
     cols = [(c, lbl) for c, lbl in (("rss_peak", "process (RSS)"), ("mlx_peak", "MLX active"),
                                     ("gpu_memory_peak", "GPU (machine)")) if c in spans]
-    peaks = spans.groupby("step")[[c for c, _ in cols]].max().div(GO)
+    peaks = spans.groupby("step")[[c for c, _ in cols]].max().div(GB)
     peaks = peaks.loc[peaks.max(axis=1).sort_values().index]
     fig, ax = plt.subplots(figsize=(9, 0.25 * len(cols) * len(peaks) + 1.4))
     h = 0.8 / len(cols)
@@ -179,7 +179,7 @@ def memory_by_step(spans: pd.DataFrame, output: Path) -> Path:
         pos = [k + ((len(cols) - 1) / 2 - i) * h for k in range(len(peaks))]
         ax.barh(pos, peaks[c], height=h - 0.06, color=SERIES[i], label=lbl, zorder=2)
     ax.set_yticks(range(len(peaks)), peaks.index, fontsize=9)
-    ax.set_xlabel("Memory peak (Go)")
+    ax.set_xlabel("Memory peak (GB)")
     ax.grid(axis="y", visible=False)
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=8)
     ax.set_title("Memory peak by step", loc="left", fontsize=11)
@@ -201,7 +201,7 @@ def metric_charts(metrics: pd.DataFrame, output: Path) -> list[Path]:
         fig, ax = plt.subplots(figsize=(7, 3.5))
         for i, rid in enumerate(runs[-3:]):  # Implementation note.
             r = df[df["run_id"] == rid].sort_values("step")
-            ax.plot(r["step"], r["valeur"], color=SERIES[i], label=rid, marker="o", markersize=4)
+            ax.plot(r["step"], r["value"], color=SERIES[i], label=rid, marker="o", markersize=4)
         if len(runs) > 1:
             ax.legend(fontsize=8, title="run", title_fontsize=8)
         ax.set_xlabel("step")
@@ -214,11 +214,11 @@ def metric_charts(metrics: pd.DataFrame, output: Path) -> list[Path]:
     return paths
 
 
-def _filtrer(d: dict, run_id: str) -> dict[str, pd.DataFrame]:
+def _filter_run(d: dict, run_id: str) -> dict[str, pd.DataFrame]:
     return {k: df[df["run_id"] == run_id] if "run_id" in df else df for k, df in d.items()}
 
 
-def _tables_et_charts(d: dict, output: Path) -> pd.DataFrame | None:
+def _tables_and_charts(d: dict, output: Path) -> pd.DataFrame | None:
     """CSV, step summaries, durations, memory, and metric charts for runs in `d`."""
     output.mkdir(parents=True, exist_ok=True)
     for name, df in d.items():
@@ -235,9 +235,9 @@ def _tables_et_charts(d: dict, output: Path) -> pd.DataFrame | None:
 
 def run_report(d: dict, run_id: str) -> Path:
     """Report for one run, stored in its own directory: <run>/report/."""
-    dr = _filtrer(d, run_id)
+    dr = _filter_run(d, run_id)
     output = Path(dr["runs"]["directory"].iloc[0]) / "report"
-    _tables_et_charts(dr, output)
+    _tables_and_charts(dr, output)
     if not dr["samples"].empty:
         timeline(dr, run_id, output)
     return output
@@ -253,7 +253,7 @@ def run_summary(d: dict) -> pd.DataFrame:
     smp, spans = d["samples"], d["spans"]
     for col, output in (("rss", "rss_peak_gb"), ("mlx_active", "mlx_peak_gb"), ("gpu_mem", "gpu_memory_peak_gb")):
         if col in smp:
-            r[output] = smp.groupby("run_id")[col].max() / GO
+            r[output] = smp.groupby("run_id")[col].max() / GB
     if "process_cpu_pct" in smp:
         r["average_cpu_cores"] = smp.groupby("run_id")["process_cpu_pct"].mean() / 100
     if not spans.empty:
@@ -297,7 +297,7 @@ def evolution_by_run(spans: pd.DataFrame, runs: pd.DataFrame, output: Path) -> P
 
 def comparison(d: dict, output: Path) -> pd.DataFrame | None:
     """All runs together: which steps cost what, and how they change."""
-    r = _tables_et_charts(d, output)
+    r = _tables_and_charts(d, output)
     run_summary(d).to_csv(output / "run_summary.csv", index=False)
     if not d["spans"].empty:
         evolution_by_run(d["spans"], d["runs"], output)
@@ -315,7 +315,7 @@ def main() -> None:
         d = load_runs(args.directory, run_id=args.run)
         if d["runs"].empty:
             raise SystemExit(f"Run {args.run} not found in {args.directory}")
-        print(f"📁 Report : {run_report(d, args.run)}")
+        print(f"📁 Report: {run_report(d, args.run)}")
         return
 
     d = load_runs(args.directory, args.name)

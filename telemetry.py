@@ -10,20 +10,20 @@ Usage:
         with span("transcript", agent="whisper", model="large-v3-turbo") as s:
             ...
             s["segments"] = 284                      # attribute added during execution
-            metric("rtf", 0.11)                    # attached to the current span and agent
+            metric("rtf", 0.11)                      # attached to the current span and agent
 
         for i in range(5):                           # feedback / training loop
-            with span("critique", agent="relecteur", iteration=i):
+            with span("critique", agent="reviewer", iteration=i):
                 metric("score", 0.7 + i / 20, step=i)
-                event("feedback", iteration=i, accepte=i == 4)
+                event("feedback", iteration=i, accepted=i == 4)
 
-    @trace(agent="planner")                    # same behavior as a decorator (sync or async)
-    def planifier(...): ...
+    @trace(agent="planner")                      # same behavior as a decorator (sync or async)
+    def plan(...): ...
 
 Outside a `with Telemetry(...)` block, span/trace/metric/event are no-ops:
 instrumented code runs normally without telemetry.
 
-Each run creates telemetry/<date>_<name>_<id>/ :
+Each run creates telemetry/<date>_<name>_<id>/:
     run.json        machine, package versions, git commit, command line, status, duration
     samples.jsonl   samples every `interval` seconds (CPU, memory, GPU, MLX/MPS)
     events.jsonl    spans (timed steps + resources), metrics, events
@@ -33,15 +33,14 @@ the GIL during long computations, and a Python thread would miss entire minutes.
 Only MLX / MPS memory, readable only from the process, is sampled
 by a thread (it may have gaps; spans also measure it at their boundaries).
 
-Known limitations :
+Known limitations:
 - CPU and memory are measured for the process (and its children, e.g. ffmpeg), not per thread.
   If two agents run in parallel in the same process, their spans overlap and
-  see the same resources: to distinguish them, launch agents in separate processes
-  separately, or read the timeline in samples.jsonl.
+  see the same resources: to distinguish them, launch agents in separate processes, or read the timeline in samples.jsonl.
 - RSS does not count MLX / MPS tensors (unified memory allocated through Metal): inspect
   mlx_active / mps_allocated for the process, gpu_mem for the whole machine.
 - GPU: global machine GPU utilization and memory (ioreg, without sudo).
-- Energy : non measured (powermetrics exige sudo).
+- Energy: not measured (powermetrics requires sudo).
 - In a manually created thread, the parent span is not propagated automatically:
   use contextvars.copy_context().run(...) or a ThreadPoolExecutor through asyncio.
 """
@@ -140,7 +139,7 @@ class _ProcessProbe:
                     pass
         return [self.proc, *self._children.values()]
 
-    def cpu_et_rss(self) -> tuple[float, int]:
+    def cpu_and_rss(self) -> tuple[float, int]:
         cpu, rss = 0.0, 0
         for p in self.process():
             try:
@@ -159,7 +158,7 @@ class _ProcessProbe:
                 pass
         return total
 
-    def temps_cpu(self) -> float:
+    def cpu_time(self) -> float:
         """Cumulative CPU time (user + sys) for the process and its descendants, in seconds."""
         total = 0.0
         for p in self.process():
@@ -174,14 +173,14 @@ class _ProcessProbe:
 
 
 def _sampler(pid: int, path: str, interval: float) -> None:
-    """Process loop d'sampling : runs until the observed process ends."""
+    """Sampling process loop: runs until the observed process ends."""
     probe = _ProcessProbe(pid, excluded={os.getpid()})
     psutil.cpu_percent(None)
     with open(path, "a", encoding="utf-8") as f:
         while probe.proc.is_running():
             time.sleep(interval)
             try:
-                cpu, rss = probe.cpu_et_rss()
+                cpu, rss = probe.cpu_and_rss()
                 vm = psutil.virtual_memory()
                 e = {
                     "t": round(time.time(), 3),
@@ -224,11 +223,11 @@ class Telemetry:
         self.start = time.time()
         self.meta = self._metadata()
         self._write_metadata(status="in_progress")
-        self._sampler = subprocess.Popen(
+        self._sampler_process = subprocess.Popen(
             [sys.executable, "-I", __file__, "--sampler", str(os.getpid()),
              str(self._samples_path), str(self.interval)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        self._probe = _ProcessProbe(os.getpid(), excluded={self._sampler.pid})
+        self._probe = _ProcessProbe(os.getpid(), excluded={self._sampler_process.pid})
         self._thread = threading.Thread(target=self._framework_loop, name="telemetry", daemon=True)
         self._thread.start()
         self._previous, _active = _active, self
@@ -238,13 +237,13 @@ class Telemetry:
         global _active
         self._stop.set()
         self._thread.join(timeout=5)
-        self._sampler.terminate()
+        self._sampler_process.terminate()
         try:
-            self._sampler.wait(timeout=5)
+            self._sampler_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            self._sampler.kill()
+            self._sampler_process.kill()
         _active = self._previous
-        status = "ok" if typ is None else ("interrompu" if typ is KeyboardInterrupt else "error")
+        status = "ok" if typ is None else ("interrupted" if typ is KeyboardInterrupt else "error")
         self._write_metadata(status=status, error=repr(exc) if exc else None)
         self._events_file.close()
         self._samples_file.close()
@@ -263,15 +262,15 @@ class Telemetry:
             "id": self.id,
             "name": self.name,
             "tags": self.tags,
-            "commande": sys.argv,
+            "command": sys.argv,
             "git_commit": _command("git", "rev-parse", "--short", "HEAD", cwd=root),
             "git_modified": bool(git_status) if git_status is not None else None,
             "machine": {
-                "hote": platform.node(),
+                "host": platform.node(),
                 "chip": _command("sysctl", "-n", "machdep.cpu.brand_string") or platform.processor(),
                 "os": platform.platform(),
                 "ram": psutil.virtual_memory().total,
-                "coeurs": psutil.cpu_count(),
+                "cores": psutil.cpu_count(),
             },
             "python": sys.version.split()[0],
             "packages": versions,
@@ -322,8 +321,8 @@ class Telemetry:
             self._events_file.write(json.dumps(evt, ensure_ascii=False, default=str) + "\n")
             self._events_file.flush()
 
-    def metric(self, name: str, valeur: float, step: int | None = None, **tags) -> None:
-        self._write({"type": "metric", "name": name, "valeur": valeur, "step": step, "tags": tags})
+    def metric(self, name: str, value: float, step: int | None = None, **tags) -> None:
+        self._write({"type": "metric", "name": name, "value": value, "step": step, "tags": tags})
 
     def event(self, name: str, **data) -> None:
         self._write({"type": "event", "name": name, "data": data})
@@ -333,33 +332,33 @@ class Telemetry:
         parent = _current_span.get()
         sid = uuid.uuid4().hex[:12]
         agent = agent or (parent[1] if parent else None)
-        jeton = _current_span.set((sid, agent))
+        token = _current_span.set((sid, agent))
         start = time.time()
-        cpu0 = self._probe.temps_cpu()
+        cpu0 = self._probe.cpu_time()
         rss0 = self._probe.rss()
         mem0 = _framework_memory()
         status, error = "ok", None
         try:
             yield attrs
         except BaseException as e:
-            status, error = ("interrompu" if isinstance(e, KeyboardInterrupt) else "error"), repr(e)
+            status, error = ("interrupted" if isinstance(e, KeyboardInterrupt) else "error"), repr(e)
             raise
         finally:
             end = time.time()
             duration = end - start
-            cpu_s = self._probe.temps_cpu() - cpu0
+            cpu_s = self._probe.cpu_time() - cpu0
             rss1 = self._probe.rss()
             mem1 = _framework_memory()
-            _current_span.reset(jeton)
+            _current_span.reset(token)
             self._reload_samples()
-            fenetre = [s for s in self._samples if start <= s["t"] <= end]
+            window = [s for s in self._samples if start <= s["t"] <= end]
 
-            def peak(cle, *bornes):
-                v = [s[cle] for s in fenetre if cle in s] + [b for b in bornes if b is not None]
+            def peak(key, *bounds):
+                v = [s[key] for s in window if key in s] + [b for b in bounds if b is not None]
                 return max(v) if v else None
 
-            def average(cle):
-                v = [s[cle] for s in fenetre if cle in s]
+            def average(key):
+                v = [s[key] for s in window if key in s]
                 return round(sum(v) / len(v), 1) if v else None
 
             self._write({
@@ -373,7 +372,7 @@ class Telemetry:
                 "average_gpu_util_pct": average("gpu_util_pct"), "gpu_util_peak_pct": peak("gpu_util_pct"),
                 "mlx_peak": peak("mlx_active", mem0.get("mlx_active"), mem1.get("mlx_active")),
                 "mps_peak": peak("mps_allocated", mem0.get("mps_allocated"), mem1.get("mps_allocated")),
-                "sample_count": sum(1 for s in fenetre if "rss" in s),
+                "sample_count": sum(1 for s in window if "rss" in s),
                 "thread": threading.current_thread().name,
                 "status": status, "error": error, "attrs": attrs,
             })
@@ -390,9 +389,9 @@ def span(name: str, agent: str | None = None, **attrs):
     return _active.span(name, agent, **attrs) if _active else _empty_span(attrs)
 
 
-def metric(name: str, valeur: float, step: int | None = None, **tags) -> None:
+def metric(name: str, value: float, step: int | None = None, **tags) -> None:
     if _active:
-        _active.metric(name, valeur, step, **tags)
+        _active.metric(name, value, step, **tags)
 
 
 def event(name: str, **data) -> None:
@@ -410,16 +409,16 @@ def trace(name: str | None = None, agent: str | None = None, **attrs):
         n = name or f.__qualname__
         if asyncio.iscoroutinefunction(f):
             @functools.wraps(f)
-            async def enveloppe_async(*a, **k):
+            async def async_wrapper(*a, **k):
                 with span(n, agent, **attrs):
                     return await f(*a, **k)
-            return enveloppe_async
+            return async_wrapper
 
         @functools.wraps(f)
-        def enveloppe(*a, **k):
+        def wrapper(*a, **k):
             with span(n, agent, **attrs):
                 return f(*a, **k)
-        return enveloppe
+        return wrapper
     return deco
 
 

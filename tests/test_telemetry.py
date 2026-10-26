@@ -28,13 +28,14 @@ def test_metrics_are_attached_to_current_span(telemetry_run):
     parent_id = next(e["span_id"] for e in events if e["type"] == "span" and e["name"] == "parent")
     losses = [e for e in events if e["type"] == "metric" and e["name"] == "loss"]
     assert [m["step"] for m in losses] == [0, 1, 2]
+    assert [m["value"] for m in losses] == [1.0, 0.5, 1 / 3]
     assert all(m["span_id"] == parent_id for m in losses)
 
 
 def test_sampler_process_writes_samples(telemetry_run):
     samples = [s for s in read_jsonl(telemetry_run.directory / "samples.jsonl") if "rss" in s]
     assert samples, "the sampler subprocess wrote no CPU/memory samples"
-    assert telemetry_run._sampler.poll() is not None, "the sampler subprocess is still running"
+    assert telemetry_run._sampler_process.poll() is not None, "the sampler subprocess is still running"
 
 
 def test_api_is_a_no_op_outside_a_run():
