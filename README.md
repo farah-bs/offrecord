@@ -7,10 +7,10 @@ Local meeting assistant for macOS Apple Silicon. The project records or loads au
 ## Features
 
 - recording from the microphone or transcription of an existing file;
-- local English transcription with `mlx-community/whisper-large-v3-turbo`;
-- filtering of common Whisper hallucinations during silence;
+- local transcription with `mlx-community/whisper-large-v3-turbo`, in French by default (any Whisper language, or automatic detection);
+- filtering of common Whisper hallucinations during silence, in French and English;
 - optional diarization with `pyannote/speaker-diarization-3.1`;
-- structured English meeting reports with `mlx-community/Qwen2.5-7B-Instruct-4bit`;
+- structured meeting reports with `mlx-community/Qwen2.5-7B-Instruct-4bit`, written in the meeting's language;
 - local telemetry: duration, CPU, memory, Apple GPU, MLX/MPS memory, metrics, and pipeline steps;
 - CSV reports and charts for analyzing runs.
 
@@ -148,6 +148,10 @@ python meeting.py \
   --directory ./my-meetings \
   --whisper-model mlx-community/whisper-large-v3-turbo
 ```
+
+`--language` defaults to `fr`. Pass another Whisper language code (`en`, `de`, ...) or
+`auto` to let Whisper detect it from the first 30 seconds. The report is written in
+French for `fr`, English for `en`, and in the transcript's language otherwise.
 
 By default, results are written to `Meetings/YYYY-MM-DD_HHhMM[_title]/`. Each run produces at least:
 

@@ -3,9 +3,19 @@ import json
 import meeting
 
 
-def test_hallucinations_are_filtered(fake_whisper):
+def test_french_and_english_hallucinations_are_filtered(fake_whisper):
     segments = meeting.transcribe(None, "model", "fr", None)
     assert [s["text"] for s in segments] == ["Bonjour à tous."]
+
+
+def test_language_defaults_to_french_and_accepts_auto(fake_whisper, wav_file, tmp_path):
+    common = ["--file", str(wav_file), "--no-telemetry", "--directory", str(tmp_path)]
+    meeting.main(common)
+    assert fake_whisper["language"] == "fr"
+    meeting.main(common + ["--language", "auto"])
+    assert fake_whisper["language"] is None
+    meeting.main(common + ["--language", "en"])
+    assert fake_whisper["language"] == "en"
 
 
 def test_assign_speakers_uses_largest_overlap():

@@ -31,11 +31,21 @@ DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
 # Implementation note.
 HALLUCINATIONS = (
     "amara.org",
+    # French
+    "sous-titres réalisés",
+    "sous-titrage st'",
+    "merci d'avoir regardé",
+    "abonnez-vous",
+    # English
+    "subtitles by",
     "subtitles created",
-    "subtitling",
     "thanks for watching",
-    "subscribe",
+    "thank you for watching",
+    "please subscribe",
 )
+
+# Language the report is written in, from the --language code.
+REPORT_LANGUAGES = {"fr": "French", "en": "English"}
 
 
 # Implementation note.
@@ -92,7 +102,7 @@ def load_audio(path: Path) -> np.ndarray:
 
 # Implementation note.
 
-def transcribe(audio: np.ndarray, model: str, language: str, vocabulary: str | None) -> list[dict]:
+def transcribe(audio: np.ndarray, model: str, language: str | None, vocabulary: str | None) -> list[dict]:
     import mlx_whisper
 
     print(f"\n📝 Transcribing with {model} (first run: model download)...")
@@ -204,7 +214,7 @@ is not present in the transcript or context.
 No additional glossary provided.
 
 ## Output format
-Write in English Markdown with exactly these sections, in this order. If a section is empty, write "Nothing mentioned".
+Write the report in {language}, in Markdown, with exactly these sections, in this order. Keep the section titles below as they are. If a section is empty, write "Nothing mentioned".
 
 ## Summary
 Meeting subject, main results, and conclusions in one paragraph.
@@ -241,7 +251,7 @@ Passages too degraded to interpret confidently, with your best reading hypothesi
 """
 
 
-def summarize(text: str, model: str, report_context: str) -> str:
+def summarize(text: str, model: str, report_context: str, language: str | None) -> str:
     from mlx_lm import load, stream_generate
 
     max_tokens = 2000
@@ -251,6 +261,7 @@ def summarize(text: str, model: str, report_context: str) -> str:
     messages = [
         {"role": "system", "content": PROMPT.format(
             context=report_context.strip() or "No additional context provided.",
+            language=REPORT_LANGUAGES.get(language, "the language of the transcript"),
         )},
         {"role": "user", "content": "Meeting transcript :\n\n" + text},
     ]
@@ -280,7 +291,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--report-context", default="",
                    help="optional context to customize the report (project, audience, terminology, etc.)")
     p.add_argument("--vocabulary", help="technical words to guide Whisper (names, acronyms...)")
-    p.add_argument("--language", default="en")
+    p.add_argument("--language", default="fr",
+                   help="language code spoken in the meeting (fr, en, ...), or 'auto' to detect it "
+                        "(default: fr)")
     p.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     p.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
     p.add_argument("--diarization-model", default=DEFAULT_DIARIZATION_MODEL)
@@ -291,6 +304,8 @@ def main(argv: list[str] | None = None) -> None:
                    default=Path(__file__).resolve().parent / "telemetry",
                    help="where to store telemetry runs (default: ./telemetry next to the script)")
     args = p.parse_args(argv)
+    if args.language == "auto":
+        args.language = None  # Whisper detects the language from the first 30 seconds.
 
     if args.no_telemetry:
         context = nullcontext()
@@ -356,7 +371,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if args.report:
         try:
             with span("meeting_report", agent="llm", model=args.llm_model):
-                cr = summarize(text, args.llm_model, args.report_context)
+                cr = summarize(text, args.llm_model, args.report_context, args.language)
             (output / "meeting_report.md").write_text(f"# Meeting report: {name}\n\n{cr}\n", encoding="utf-8")
             print(f"✅ Meeting report: {output / 'meeting_report.md'}")
         except Exception as e:

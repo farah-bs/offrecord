@@ -36,14 +36,15 @@ def telemetry_run(tmp_path):
 
 @pytest.fixture
 def fake_whisper(monkeypatch):
-    """Replace mlx_whisper with a stub that returns two segments, one of them a known hallucination."""
+    """Replace mlx_whisper with a stub: one real segment, then a French and an English hallucination."""
     calls = {}
 
     def transcribe(audio, **kwargs):
         calls.update(kwargs)
         return {"segments": [
             {"start": 0.0, "end": 1.0, "text": " Bonjour à tous. "},
-            {"start": 1.0, "end": 2.0, "text": "Thanks for watching!"},
+            {"start": 1.0, "end": 2.0, "text": "Sous-titres réalisés par la communauté d'Amara.org"},
+            {"start": 2.0, "end": 3.0, "text": "Thanks for watching!"},
         ]}
 
     monkeypatch.setitem(sys.modules, "mlx_whisper", types.SimpleNamespace(transcribe=transcribe))
