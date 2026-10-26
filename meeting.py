@@ -270,7 +270,7 @@ def summarize(text: str, model: str, report_context: str) -> str:
 
 # Implementation note.
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Local meeting transcript")
     p.add_argument("--file", type=Path, help="existing audio file (otherwise: microphone recording)")
     p.add_argument("--title", default="", help="short title, added to the directory name")
@@ -286,14 +286,16 @@ def main() -> None:
     p.add_argument("--diarization-model", default=DEFAULT_DIARIZATION_MODEL)
     p.add_argument("--directory", type=Path, default=Path.cwd() / "Meetings",
                    help="where to save (default: ./Meetings in the current directory)")
-    p.add_argument("--no-telemetry", action="store_true",
-                   help="do not measure resources (default: ./telemetry next to the script)")
-    args = p.parse_args()
+    p.add_argument("--no-telemetry", action="store_true", help="do not measure resources")
+    p.add_argument("--telemetry-directory", type=Path,
+                   default=Path(__file__).resolve().parent / "telemetry",
+                   help="where to store telemetry runs (default: ./telemetry next to the script)")
+    args = p.parse_args(argv)
 
     if args.no_telemetry:
         context = nullcontext()
     else:
-        context = Telemetry("meeting", directory=Path(__file__).resolve().parent / "telemetry",
+        context = Telemetry("meeting", directory=args.telemetry_directory,
                               tags={k: v for k, v in vars(args).items()
                                     if k != "report_context" and v not in (None, False, "")})
     with context:
