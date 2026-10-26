@@ -8,3 +8,6 @@ Meetings/
 telemetry/
 notes.txt
 dictionary.json
+
+# Clip lists describe private recordings.
+experiments/*.clips.json
