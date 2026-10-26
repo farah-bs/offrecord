@@ -150,7 +150,7 @@ def duration_by_step(spans: pd.DataFrame, output: Path) -> Path:
     order = spans.groupby("step")["duration_s"].mean().sort_values()
     fig, ax = plt.subplots(figsize=(8, 0.45 * len(order) + 1.2))
     y = range(len(order))
-    ax.barh(y, order.varead, color=SERIES[0], height=0.55, zorder=2)
+    ax.barh(y, order.values, color=SERIES[0], height=0.55, zorder=2)
     for i, step in enumerate(order.index):
         v = spans.loc[spans["step"] == step, "duration_s"]
         ax.scatter(v, [i] * len(v), s=14, color=TEXTE, zorder=3, linewidths=0)

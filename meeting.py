@@ -247,7 +247,7 @@ def summarize(text: str, model: str, report_context: str) -> str:
     max_tokens = 2000
     print(f"\n🧠 Writing the meeting report with {model} (first run: ~4 GB to download)...")
     with span("llm_loading", model=model):
-        model, tokenizer = load(model)
+        llm, tokenizer = load(model)
     messages = [
         {"role": "system", "content": PROMPT.format(
             context=report_context.strip() or "No additional context provided.",
@@ -257,7 +257,7 @@ def summarize(text: str, model: str, report_context: str) -> str:
     prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
     with span("generation_llm", model=model, max_tokens=max_tokens) as s:
         morceaux, r = [], None
-        for r in stream_generate(model, tokenizer, prompt, max_tokens=max_tokens):
+        for r in stream_generate(llm, tokenizer, prompt, max_tokens=max_tokens):
             morceaux.append(r.text)
         s["input_tokens"], s["output_tokens"] = r.prompt_tokens, r.generation_tokens
         metric("prefill_tokens_per_s", r.prompt_tps)        # Implementation note.
@@ -341,7 +341,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if args.speakers:
         try:
             with span("diarization", agent="pyannote", model=args.diarization_model) as s:
-                assign_speakers(segments, diarize(audio, args.diarization_model, args.num_speakers))
+                assign_speakers(segments, diarize(audio, args.diarization_model, args.nb_speakers))
                 s["speakers"] = len({x.get("speaker") for x in segments} - {None, "?"})
         except Exception as e:
             print(f"⚠️  Speaker identification unavailable ({e}). Continuing without it.")

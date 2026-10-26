@@ -138,7 +138,7 @@ class _ProcessProbe:
                     c.cpu_percent(None)
                 except psutil.Error:
                     pass
-        return [self.proc, *self._children.varead()]
+        return [self.proc, *self._children.values()]
 
     def cpu_et_rss(self) -> tuple[float, int]:
         cpu, rss = 0.0, 0
