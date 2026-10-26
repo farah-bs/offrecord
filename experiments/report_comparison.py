@@ -30,6 +30,7 @@ results stay together in the first folder.
 
 import argparse
 import csv
+import os
 import gc
 import json
 import re
@@ -44,6 +45,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent.parent
+# Plain HTTP downloads: the Xet transfer client failed mid-download on an unstable connection.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 sys.path.insert(0, str(ROOT))
 
 import dictionary as dictionary_file  # noqa: E402
@@ -82,7 +85,7 @@ SECTIONS = (
 )
 
 COLUMNS = ["model", "facts", "invented", "sections", "terms", "french", "words", "write_s", "load_s",
-           "total_s", "output_tokens",
+           "download_s", "total_s", "output_tokens",
            "generation_tps", "prefill_tps", "mlx_peak_gb", "truncated", "telemetry_run", "error"]
 
 NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
@@ -136,7 +139,7 @@ def llm_metrics(events_path: Path, span_id: str) -> dict:
             values.setdefault(e["name"], []).append(e["value"])
     return {
         "output_tokens": sum(e["attrs"].get("output_tokens", 0) for e in llm_spans),
-        "load_s": round(sum(e["duration_s"] for e in loading), 1),  # includes the download, if any
+        "load_s": round(sum(e["duration_s"] for e in loading), 1),  # from disk: downloads are timed apart
         "write_s": round(sum(e["duration_s"] for e in llm_spans), 1),
         "generation_tps": round(sum(values.get("generation_tokens_per_s", [0])) /
                                 max(len(values.get("generation_tokens_per_s", [])), 1), 1),
@@ -151,6 +154,37 @@ def llm_metrics(events_path: Path, span_id: str) -> dict:
 def cached(repo: str) -> bool:
     from huggingface_hub import scan_cache_dir
     return any(r.repo_id == repo for r in scan_cache_dir().repos)
+
+
+def online(timeout: float = 5) -> bool:
+    import socket
+    try:
+        socket.create_connection(("huggingface.co", 443), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def download(repo: str, attempts: int = 5) -> float:
+    """Downloads a model before it is timed, waiting out network drops. Returns the seconds spent.
+
+    Large downloads have made the connection drop for a few minutes; without waiting, every
+    following model failed within seconds."""
+    from huggingface_hub import snapshot_download
+    t0 = time.time()
+    for attempt in range(1, attempts + 1):
+        try:
+            # Few parallel connections, resumed on retry: gentler on an unstable network.
+            snapshot_download(repo, max_workers=2)
+            return round(time.time() - t0, 1)
+        except Exception as e:
+            if attempt == attempts:
+                raise
+            print(f"   download failed ({type(e).__name__}), attempt {attempt}/{attempts}; waiting for the network...")
+            deadline = time.time() + 600
+            while not online() and time.time() < deadline:
+                time.sleep(15)
+            time.sleep(30 * attempt)
 
 
 def remove_from_cache(repo: str) -> None:
@@ -275,6 +309,9 @@ def main() -> None:
             row = {"model": model, "telemetry_run": t.id}
             print(f"\n=== {model}{'' if was_cached else ' (download)'}")
             try:
+                if not was_cached:
+                    with span("model_download", model=model):
+                        row["download_s"] = download(model)
                 with span("model_report", agent="llm", model=model) as s:
                     t0 = time.time()
                     report = meeting.summarize(text, model, args.report_context, args.language, glossary)
