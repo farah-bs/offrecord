@@ -16,6 +16,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -46,6 +47,10 @@ HALLUCINATIONS = (
 
 # Language the report is written in, from the --language code.
 REPORT_LANGUAGES = {"fr": "French", "en": "English"}
+
+# Failures of optional steps that come from the environment, not from a bug: missing package,
+# refused model access, download or disk problem. Anything else also prints its traceback.
+EXPECTED_ERRORS = (ImportError, RuntimeError, OSError)
 
 
 # ---------------------------------------------------------------- recording
@@ -167,6 +172,12 @@ def assign_speakers(segments: list[dict], speaker_turns: list[tuple]) -> None:
 
 
 # ---------------------------------------------------------------- formatting
+
+def optional_step_failed(step: str, error: Exception, consequence: str) -> None:
+    print(f"⚠️  {step} unavailable ({error}). {consequence}")
+    if not isinstance(error, EXPECTED_ERRORS):
+        traceback.print_exc()
+
 
 def hms(t: float) -> str:
     t = int(t)
@@ -322,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
             report = run_report(load_runs(context.directory.parent, run_id=context.id), context.id)
             print(f"📊 Resources: {report}")
         except Exception as e:
-            print(f"⚠️  Telemetry report unavailable ({e}). Raw measurements are in {context.directory}")
+            optional_step_failed("Telemetry report", e, f"Raw measurements are in {context.directory}")
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -361,7 +372,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 assign_speakers(segments, diarize(audio, args.diarization_model, args.nb_speakers))
                 s["speakers"] = len({x.get("speaker") for x in segments} - {None, "?"})
         except Exception as e:
-            print(f"⚠️  Speaker identification unavailable ({e}). Continuing without it.")
+            optional_step_failed("Speaker identification", e, "Continuing without it.")
 
     text = format_transcript(segments)
     (output / "transcript.md").write_text(f"# Transcript: {name}\n\n{text}\n", encoding="utf-8")
@@ -375,7 +386,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             (output / "meeting_report.md").write_text(f"# Meeting report: {name}\n\n{report_text}\n", encoding="utf-8")
             print(f"✅ Meeting report: {output / 'meeting_report.md'}")
         except Exception as e:
-            print(f"⚠️  Meeting report unavailable ({e}). The transcript was saved successfully.")
+            optional_step_failed("Meeting report", e, "The transcript was saved successfully.")
 
     print(f"\n📁 Directory: {output}")
 

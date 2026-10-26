@@ -59,3 +59,30 @@ def test_cli_without_telemetry(fake_whisper, wav_file, tmp_path):
     meeting.main(["--file", str(wav_file), "--no-telemetry", "--directory", str(tmp_path / "Meetings"),
                   "--telemetry-directory", str(tmp_path / "telemetry")])
     assert not (tmp_path / "telemetry").exists()
+
+
+def _run_with_failing_diarization(error, fake_whisper, wav_file, tmp_path, monkeypatch, capsys):
+    def failing_diarize(*args):
+        raise error
+
+    monkeypatch.setattr(meeting, "diarize", failing_diarize)
+    meeting.main(["--file", str(wav_file), "--speakers", "--no-telemetry",
+                  "--directory", str(tmp_path / "Meetings")])
+    (output,) = (tmp_path / "Meetings").iterdir()
+    assert (output / "transcript.md").exists(), "a failing optional step must not lose the transcript"
+    return capsys.readouterr()
+
+
+def test_expected_failure_of_optional_step_is_a_short_warning(fake_whisper, wav_file, tmp_path,
+                                                               monkeypatch, capsys):
+    out = _run_with_failing_diarization(ImportError("No module named 'pyannote'"),
+                                        fake_whisper, wav_file, tmp_path, monkeypatch, capsys)
+    assert "Speaker identification unavailable" in out.out
+    assert "Traceback" not in out.err
+
+
+def test_bug_in_optional_step_shows_its_traceback(fake_whisper, wav_file, tmp_path, monkeypatch, capsys):
+    out = _run_with_failing_diarization(AttributeError("'Namespace' object has no attribute 'x'"),
+                                        fake_whisper, wav_file, tmp_path, monkeypatch, capsys)
+    assert "Speaker identification unavailable" in out.out
+    assert "Traceback" in out.err and "AttributeError" in out.err
