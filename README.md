@@ -403,6 +403,7 @@ proposals from hand corrections, the `learn` and `review` commands, and the word
 
 ```text
 .
+├── LICENSE                # MIT
 ├── meeting.py             # recording, transcription, report, review, and learn CLI
 ├── dictionary.py          # personal dictionary: corrections, prompt, glossary, learning
 ├── telemetry.py           # resource instrumentation and collection
@@ -432,4 +433,4 @@ Recordings, transcripts, reports, the dictionary, and telemetry traces may conta
 
 ## License
 
-No license is currently defined.
+[MIT](LICENSE). The models keep their own licenses, shown on their Hugging Face pages.
