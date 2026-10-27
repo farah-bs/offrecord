@@ -53,6 +53,7 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -174,6 +175,8 @@ class _ProcessProbe:
 
 def _sampler(pid: int, path: str, interval: float) -> None:
     """Sampling process loop: runs until the observed process ends."""
+    # Ctrl+C in the terminal reaches this process too: the observed process decides when to stop it.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     probe = _ProcessProbe(pid, excluded={os.getpid()})
     psutil.cpu_percent(None)
     with open(path, "a", encoding="utf-8") as f:

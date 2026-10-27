@@ -64,6 +64,11 @@ EXPECTED_ERRORS = (ImportError, RuntimeError, OSError)
 
 # ---------------------------------------------------------------- recording
 
+FLUSH_S = 10  # the WAV header is rewritten this often, so a killed recording stays readable
+STREAM_CLOSE_TIMEOUT_S = 5
+audio_device_stuck = False  # set when CoreAudio never released the microphone
+
+
 def record(wav_path: Path) -> None:
     import sounddevice as sd
     import soundfile as sf
@@ -78,11 +83,13 @@ def record(wav_path: Path) -> None:
     stop = threading.Event()
     threading.Thread(target=lambda: (input(), stop.set()), daemon=True).start()
 
-    print("\n🎙  Recording in progress. Press Enter to stop.\n")
-    start = time.time()
-    # Written to disk continuously: nothing is lost if the script crashes.
-    with sf.SoundFile(wav_path, mode="w", samplerate=SR, channels=1, subtype="PCM_16") as f, \
-            sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=callback):
+    print("\n🎙  Recording in progress. Press Enter (or Ctrl+C) to stop.\n")
+    start = last_flush = time.time()
+    stream = sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=callback)
+    # Written to disk continuously, with its header updated every FLUSH_S seconds: the file stays
+    # readable up to the last flush even if the script is killed.
+    with sf.SoundFile(wav_path, mode="w", samplerate=SR, channels=1, subtype="PCM_16") as f:
+        stream.start()
         try:
             while not stop.is_set():
                 try:
@@ -91,6 +98,9 @@ def record(wav_path: Path) -> None:
                     level = float(np.sqrt(np.mean(block ** 2)))
                 except queue.Empty:
                     level = 0.0
+                if time.time() - last_flush > FLUSH_S:
+                    f.flush()
+                    last_flush = time.time()
                 s = int(time.time() - start)
                 bar = "█" * min(30, int(level * 300))
                 print(f"\r  {s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}  {bar:<30}",
@@ -100,6 +110,16 @@ def record(wav_path: Path) -> None:
         while not q.empty():
             f.write(q.get())
     print(f"\n\n✅ Audio recorded: {wav_path}")
+    # Closed only once the file is complete, and from a thread: when the audio device changed during
+    # the recording (headphones, AirPods, a call app), CoreAudio can block forever in stopping it.
+    closer = threading.Thread(target=lambda: (stream.abort(), stream.close()), daemon=True)
+    closer.start()
+    closer.join(STREAM_CLOSE_TIMEOUT_S)
+    if closer.is_alive():
+        global audio_device_stuck
+        audio_device_stuck = True
+        event("audio_device_stuck")
+        print("⚠️  The microphone did not close (macOS audio blocked). Continuing anyway.")
 
 
 def load_audio(path: Path) -> np.ndarray:
@@ -707,6 +727,10 @@ def main(argv: list[str] | None = None) -> None:
             print(f"📊 Resources: {report}")
         except Exception as e:
             optional_step_failed("Telemetry report", e, f"Raw measurements are in {context.directory}")
+    if audio_device_stuck:
+        # sounddevice stops PortAudio when Python exits, which would block on the same stuck device.
+        sys.stdout.flush()
+        os._exit(0)
 
 
 def run_pipeline(args: argparse.Namespace) -> None:

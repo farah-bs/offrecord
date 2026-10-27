@@ -1,6 +1,10 @@
 import json
 import sys
+import threading
+import time
 import types
+
+import numpy as np
 
 import meeting
 
@@ -176,3 +180,31 @@ def test_reasoning_is_removed_from_the_report(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace(
         load=lambda model: ("llm", fake), stream_generate=fake.stream_generate))
     assert meeting.summarize("[00:00:00] short", "model", "", "fr") == "## Summary"
+
+
+def test_recording_survives_a_microphone_that_never_closes(tmp_path, monkeypatch):
+    """CoreAudio can block forever in stopping the stream after an audio device change."""
+    import soundfile as sf
+
+    class StuckStream:
+        def __init__(self, callback, **kwargs):
+            self.callback = callback
+
+        def start(self):
+            for _ in range(5):
+                self.callback(np.full((1600, 1), 0.1, dtype=np.float32), 1600, None, None)
+
+        def abort(self):
+            threading.Event().wait()  # never returns, as in the CoreAudio deadlock
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(InputStream=StuckStream))
+    monkeypatch.setattr("builtins.input", lambda *a: time.sleep(0.5))  # Enter, half a second in
+    monkeypatch.setattr(meeting, "STREAM_CLOSE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(meeting, "audio_device_stuck", False)
+    meeting.record(tmp_path / "audio.wav")
+
+    assert meeting.audio_device_stuck
+    assert sf.info(tmp_path / "audio.wav").frames == 5 * 1600, "the file must be complete and readable"

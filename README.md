@@ -418,6 +418,7 @@ proposals from hand corrections, the `learn` and `review` commands, and the word
 
 - **`No module named ...`**: check `which python` and activate `.venv`, then install the missing package in that environment.
 - **Microphone inaccessible**: grant permission to Terminal, then restart Python.
+- **"The microphone did not close"**: macOS kept the audio device blocked, usually after headphones or a call app changed it during the recording. The audio is complete and the run goes on; reconnect the device before the next recording.
 - **`ffmpeg` not found**: run `brew install ffmpeg` and check `which ffmpeg`.
 - **pyannote model refused**: accept the Hugging Face terms and verify `echo "$HF_TOKEN"` without publishing its value.
 - **Insufficient memory**: start without `--report` or `--speakers`, use a shorter file, or select smaller models.
