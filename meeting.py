@@ -5,6 +5,7 @@ Usage:
     python meeting.py                         # record from the microphone, press Enter to stop, then transcribe
     python meeting.py --file meeting.m4a      # transcribe an existing file
     python meeting.py --speakers --report     # identify speakers and generate a meeting report
+    python meeting.py review Meetings/<dir>   # let the LLM propose corrections, confirm each one
     python meeting.py learn Meetings/<dir>    # learn dictionary rules from a transcript corrected by hand
 
 Everything runs locally: Whisper through MLX, pyannote for speakers, and an MLX LLM for the report. No audio leaves the machine."""
@@ -19,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -412,14 +414,118 @@ def summarize(text: str, model: str, report_context: str, language: str | None,
                      "order:\n\n" + merged, REPORT_MAX_TOKENS, "generation_llm", model=model)
 
 
+# ---------------------------------------------------------------- proofreading with the LLM
+
+REVIEW_PROMPT = """You proofread an automatic speech-recognition transcript. Find the words the speech recognition misheard: misspelled names, acronyms and technical terms, and words that make no sense in context but sound like the right ones.
+
+## Rules
+1. Fix only misheard words. Do not change grammar, style, punctuation, word order, or spoken hesitations.
+2. Do not guess: when unsure, leave the text as it is.
+3. Spell names and terms from the glossary exactly as written there.
+
+## User-provided context
+{context}
+
+## Glossary
+{glossary}
+
+## Answer format
+The transcript lines are numbered. Answer with a JSON array only, one object per error, "wrong" copied exactly from the line:
+[{{"line": 12, "wrong": "misheard words", "right": "corrected words"}}]
+Answer [] if there is no error.
+"""
+
+# Short parts: a 7B model overlooks fewer errors, and each answer stays well within its limit.
+REVIEW_CHUNK_TOKENS = 1500
+REVIEW_MAX_TOKENS = 2000
+
+
+def _whole_words(text: str) -> re.Pattern:
+    return re.compile(r"(?<!\w)" + re.escape(text) + r"(?!\w)")
+
+
+def parse_suggestions(answer: str, segments: list[dict]) -> list[dict]:
+    """The corrections in the model's JSON answer, without those whose words are not in their line:
+    the model sometimes invents or paraphrases the text it corrects."""
+    match = re.search(r"\[.*\]", answer, re.DOTALL)
+    try:
+        items = json.loads(match.group()) if match else []
+    except json.JSONDecodeError:
+        event("unreadable_review", answer_chars=len(answer))
+        return []
+    suggestions = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            i = int(item.get("line"))
+        except (TypeError, ValueError):
+            continue
+        wrong, right = str(item.get("wrong", "")).strip(), str(item.get("right", "")).strip()
+        if (0 <= i < len(segments) and wrong and right and wrong != right
+                and _whole_words(wrong).search(segments[i]["text"])):
+            suggestions.append({"segment": i, "wrong": wrong, "right": right})
+    return suggestions
+
+
+def suggest_corrections(segments: list[dict], model: str, context: str, glossary: str) -> list[dict]:
+    """Corrections proposed by the LLM, as [{"segment": index, "wrong": ..., "right": ...}]."""
+    from mlx_lm import load
+
+    print(f"\n🧠 Proofreading the transcript with {model}...")
+    with span("llm_loading", model=model):
+        llm, tokenizer = load(model)
+    system = REVIEW_PROMPT.format(context=context.strip() or "No additional context provided.",
+                                  glossary=glossary)
+    lines = "\n".join(f"{i}: {' '.join(s['text'].split())}" for i, s in enumerate(segments))
+    parts = split_transcript(lines, lambda line: len(tokenizer.encode(line)), REVIEW_CHUNK_TOKENS)
+    metric("review_parts", len(parts))
+    suggestions = []
+    for i, part in enumerate(parts, 1):
+        if len(parts) > 1:
+            print(f"   part {i}/{len(parts)}...")
+        answer = _generate(llm, tokenizer, system, "Transcript lines:\n\n" + part,
+                           REVIEW_MAX_TOKENS, "review_llm", model=model, part=i)
+        suggestions += parse_suggestions(answer, segments)
+    return suggestions
+
+
 # ---------------------------------------------------------------- learning from corrections
 
-def ask(question: str) -> str:
-    """'y', 'n' or 'q' (quit), asked until the answer is one of them."""
+def ask(question: str, choices: str = "ynq") -> str:
+    """One of choices ('y', 'n', 'q' to quit...), asked until the answer is one of them."""
     while True:
-        answer = input(f"{question} [y/n/q] ").strip().lower()[:1]
-        if answer in ("y", "n", "q"):
+        answer = input(f"{question} [{'/'.join(choices)}] ").strip().lower()[:1]
+        if answer and answer in choices:
             return answer
+
+
+def add_rules(corrections: list, terms: list, dictionary: dict, path: Path) -> int:
+    """Asks about each proposed correction, then each term, and saves the accepted ones.
+    Returns how many were accepted."""
+    print("\nAccept a rule only if it is always right: it will apply to every future transcript.")
+    accepted, new_terms = 0, []
+    for wrong, right, n in corrections:
+        answer = ask(f'  correction  "{wrong}" -> "{right}"  ({n}x)')
+        if answer == "q":
+            break
+        if answer == "y":
+            dictionary["corrections"][wrong] = right
+            accepted += 1
+    else:
+        for term, n in terms:
+            answer = ask(f'  term        "{term}"  ({n}x)')
+            if answer == "q":
+                break
+            if answer == "y":
+                new_terms.append(term)
+    # New terms first: the Whisper prompt keeps the first terms when the list is too long.
+    dictionary["terms"] = new_terms + dictionary["terms"]
+    accepted += len(new_terms)
+    if accepted:
+        dictionary_file.save(dictionary, path)
+        print(f"✅ {accepted} rule(s) added to {path}")
+    return accepted
 
 
 def learn(argv: list[str]) -> None:
@@ -460,29 +566,90 @@ def learn(argv: list[str]) -> None:
         if not corrections and not terms:
             print("No new correction or term found.")
             return
-        print("\nAccept a rule only if it is always right: it will apply to every future transcript.")
-        accepted, new_terms = 0, []
-        for wrong, right, n in corrections:
-            answer = ask(f'  correction  "{wrong}" -> "{right}"  ({n}x)')
+        metric("accepted", add_rules(corrections, terms, dictionary, path))
+
+
+def review(argv: list[str]) -> None:
+    p = argparse.ArgumentParser(prog="meeting.py review",
+                                description="Let the local LLM propose transcript corrections, confirm each one, "
+                                            "then choose which ones to add to the dictionary")
+    p.add_argument("meeting", type=Path, help="meeting directory, with segments.json and transcript.md")
+    p.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
+    p.add_argument("--context", default="",
+                   help="optional context for the model (project, people, terminology, etc.)")
+    p.add_argument("--dictionary", type=Path, default=DEFAULT_DICTIONARY)
+    p.add_argument("--no-telemetry", action="store_true")
+    p.add_argument("--telemetry-directory", type=Path,
+                   default=Path(__file__).resolve().parent / "telemetry")
+    args = p.parse_args(argv)
+
+    segments_path, transcript_path = args.meeting / "segments.json", args.meeting / "transcript.md"
+    segments = json.loads(segments_path.read_text(encoding="utf-8"))
+    markdown = transcript_path.read_text(encoding="utf-8")
+    # transcript.md is rewritten from segments.json: refuse rather than lose corrections made by hand.
+    if dictionary_file.transcript_words(markdown) != dictionary_file.words(" ".join(s["text"] for s in segments)):
+        sys.exit(f"{transcript_path} was edited by hand: review would overwrite your edits. "
+                 f"Run `meeting.py learn {args.meeting}` to learn from them instead.")
+    path = args.dictionary.expanduser()
+    dictionary = dictionary_file.load(path)
+
+    if args.no_telemetry:
+        context = nullcontext()
+    else:
+        # Only the meeting date: the directory name may contain a private title.
+        context = Telemetry("review", directory=args.telemetry_directory,
+                            tags={"meeting_date": args.meeting.resolve().name[:10], "llm_model": args.llm_model},
+                            command=["meeting.py", "review", "<redacted>"])
+    with context:
+        suggestions = suggest_corrections(segments, args.llm_model, args.context,
+                                          dictionary_file.glossary(dictionary))
+        groups: dict[tuple, list] = {}  # (wrong, right) -> segment indices, in transcript order
+        for s in suggestions:
+            groups.setdefault((s["wrong"], s["right"]), []).append(s["segment"])
+        metric("proposed", len(groups))
+        if not groups:
+            print("The model found nothing to correct.")
+            return
+
+        print(f"\n{len(groups)} correction(s) proposed. y: apply, n: skip, e: type your own, q: stop.")
+        applied = []
+        for (wrong, right), indices in groups.items():
+            indices = list(dict.fromkeys(indices))
+            print()
+            for i in indices[:2]:
+                print(f"  [{hms(segments[i]['start'])}] {segments[i]['text'].replace(wrong, f'«{wrong}»')}")
+            answer = ask(f'  "{wrong}" -> "{right}"  ({len(indices)}x)', "ynqe")
             if answer == "q":
                 break
-            if answer == "y":
-                dictionary["corrections"][wrong] = right
-                accepted += 1
-        else:
-            for term, n in terms:
-                answer = ask(f'  term        "{term}"  ({n}x)')
-                if answer == "q":
-                    break
-                if answer == "y":
-                    new_terms.append(term)
-        # New terms first: the Whisper prompt keeps the first terms when the list is too long.
-        dictionary["terms"] = new_terms + dictionary["terms"]
-        accepted += len(new_terms)
-        metric("accepted", accepted)
-        if accepted:
-            dictionary_file.save(dictionary, path)
-            print(f"✅ {accepted} rule(s) added to {path}")
+            if answer == "e":
+                right = input(f'  "{wrong}" -> ').strip()
+            if answer == "n" or not right or right == wrong:
+                continue
+            pattern, changed = _whole_words(wrong), 0
+            for i in indices:
+                s = segments[i]
+                text = pattern.sub(lambda m: right, s["text"])
+                if text != s["text"]:
+                    # Whisper's own text, kept the first time a segment changes, for the word error rate.
+                    s.setdefault("whisper_text", s["text"])
+                    s["text"], changed = text, changed + 1
+            if changed:
+                applied.append((wrong, right, changed))
+        metric("applied", len(applied))
+        if not applied:
+            return
+        segments_path.write_text(json.dumps(segments, ensure_ascii=False, indent=1), encoding="utf-8")
+        title = markdown.split("\n", 1)[0]
+        transcript_path.write_text(f"{title}\n\n{format_transcript(segments)}\n", encoding="utf-8")
+        print(f"\n✅ {len(applied)} correction(s) applied to {transcript_path}")
+
+        corrections = [(w, r, n) for w, r, n in applied if dictionary["corrections"].get(w) != r]
+        terms = Counter()
+        for _, r, n in applied:
+            if dictionary_file.looks_like_a_term(r) and r not in dictionary["terms"]:
+                terms[r] += n
+        if corrections or terms:
+            metric("accepted", add_rules(corrections, terms.most_common(), dictionary, path))
 
 
 # ---------------------------------------------------------------- main program
@@ -491,6 +658,8 @@ def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["learn"]:
         return learn(argv[1:])
+    if argv[:1] == ["review"]:
+        return review(argv[1:])
     p = argparse.ArgumentParser(description="Local meeting transcript")
     p.add_argument("--file", type=Path, help="existing audio file (otherwise: microphone recording)")
     p.add_argument("--title", default="", help="short title, added to the directory name")

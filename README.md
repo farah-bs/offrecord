@@ -9,6 +9,7 @@ Local meeting assistant for macOS Apple Silicon. The project records or loads au
 - recording from the microphone or transcription of an existing file;
 - local transcription with `mlx-community/whisper-large-v3-turbo`, in French by default (any Whisper language, or automatic detection);
 - a personal dictionary of terms and corrections, used throughout the meeting, in the correction pass and in the report;
+- `meeting.py review`, where the local LLM proposes transcript corrections that you confirm one by one, then choose which ones join the dictionary;
 - `meeting.py learn`, which proposes new dictionary rules from a transcript you corrected by hand;
 - filtering of common Whisper hallucinations during silence, in French and English;
 - optional diarization with `pyannote/speaker-diarization-3.1`;
@@ -265,6 +266,23 @@ flowchart LR
 
 On a 15-minute recording, transcription took 37 s both with and without the dictionary.
 
+### Let the local LLM proofread
+
+```bash
+python meeting.py review Meetings/2026-10-27_09h19_team-meeting
+```
+
+The LLM (`--llm-model`, Qwen2.5-7B by default) reads the transcript in parts of about 1,500 tokens, with the dictionary as glossary and an optional `--context "..."`, and lists the words it thinks were misheard. A proposal whose words are not in its line is dropped: the model sometimes invents the text it corrects. You then see each proposal in context:
+
+```text
+  [00:04:12] on a comparé avec «pie torche» sur le même GPU
+  "pie torche" -> "PyTorch"  (1x) [y/n/q/e]
+```
+
+Answer `y` to apply it, `n` to skip it, `e` to type the right version yourself, or `q` to stop. Accepted corrections are written to `transcript.md` and `segments.json`, which keeps Whisper's text in `whisper_text`. Then, as with `learn`, each correction you applied is offered as a dictionary rule, and each corrected spelling with a capital, digit or hyphen as a term: a fix that is right in one sentence is not always right everywhere.
+
+`review` rewrites `transcript.md` from `segments.json`, so it refuses a transcript already edited by hand. Run it first, then fix what remains by hand and run `learn`: its `wer` then measures the transcript after the review, and `wer_whisper` Whisper's own text.
+
 ### Learn from your corrections
 
 After fixing a transcript by hand, run:
@@ -316,7 +334,7 @@ flowchart LR
 
 Each pipeline step is a span with its duration and resource peaks. Sampling runs in a separate process because MLX and PyTorch hold Python's global lock during long computations, and a thread would miss whole minutes; only MLX and MPS memory, readable only from inside the process, is sampled by a thread.
 
-Metrics logged by `meeting.py`: `audio_duration_s`, `rtf` (compute time divided by audio duration), `raw_segments`, `filtered_segments`, `dictionary_terms`, `dictionary_corrections`, `prompt_terms`, `whisper_blocks`, `corrections_applied`, `report_parts`, and for each LLM call `prefill_tokens_per_s`, `generation_tokens_per_s`, `mlx_peak_gb`. Runs are named `meeting`, `learn`, or `prompt_comparison`.
+Metrics logged by `meeting.py`: `audio_duration_s`, `rtf` (compute time divided by audio duration), `raw_segments`, `filtered_segments`, `dictionary_terms`, `dictionary_corrections`, `prompt_terms`, `whisper_blocks`, `corrections_applied`, `report_parts`, and for each LLM call `prefill_tokens_per_s`, `generation_tokens_per_s`, `mlx_peak_gb`. Runs are named `meeting`, `review`, `learn`, or `prompt_comparison`; `review` logs `proposed`, `applied`, and `accepted`.
 
 The values of `--file`, `--report-context`, `--vocabulary`, and `--dictionary` are never written to telemetry:
 they are redacted from the recorded command line and left out of the run tags (only the audio
@@ -379,13 +397,13 @@ They cover telemetry (spans, metrics, the sampler process, no-op mode), per-run 
 comparison reports, hallucination filtering, speaker assignment, the CLI end to end,
 language selection, the two-pass report, error reporting, the privacy of telemetry, and the
 dictionary: corrections, prompt budget, 30-second blocks and their timestamps, the glossary,
-proposals from hand corrections, the `learn` command, and the word error rate chart.
+proposals from hand corrections, the `learn` and `review` commands, and the word error rate chart.
 
 ## Layout
 
 ```text
 .
-├── meeting.py             # recording, transcription, report, and learn CLI
+├── meeting.py             # recording, transcription, report, review, and learn CLI
 ├── dictionary.py          # personal dictionary: corrections, prompt, glossary, learning
 ├── telemetry.py           # resource instrumentation and collection
 ├── analyze_telemetry.py   # CSV aggregation and charts

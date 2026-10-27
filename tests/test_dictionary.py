@@ -3,6 +3,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 import dictionary
 import meeting
@@ -178,3 +179,70 @@ def test_wer_separates_whisper_from_the_dictionary(tmp_path, no_personal_diction
     meeting.main(["learn", str(meeting_dir), "--no-telemetry"])
     out = capsys.readouterr().out
     assert "Word error rate: 0.0% (50.0% before the dictionary corrections)" in out and "No new correction" in out
+
+
+def _fake_llm_answering(monkeypatch, answer: str):
+    """Stands in for mlx_lm: every proofreading call gets the same answer."""
+    tokenizer = types.SimpleNamespace(encode=lambda text: text.split(),
+                                      apply_chat_template=lambda messages, **kw: messages[-1]["content"])
+    reply = types.SimpleNamespace(text=answer, prompt_tokens=1, generation_tokens=1, prompt_tps=1.0,
+                                  generation_tps=1.0, peak_memory=1.0, finish_reason="stop")
+    monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace(
+        load=lambda model: ("llm", tokenizer), stream_generate=lambda *a, **k: iter([reply])))
+
+
+def test_parse_suggestions_keeps_only_corrections_of_words_in_their_line():
+    segments = [{"text": "Lefebre présente TeraSpin"}, {"text": "on en reparle"}]
+    answer = """```json
+[{"line": 0, "wrong": "Lefebre", "right": "Lefebvre"},
+ {"line": "0", "wrong": "TeraSpin", "right": "TeraSPIN"},
+ {"line": 1, "wrong": "Lefebre", "right": "Lefebvre"},
+ {"line": 7, "wrong": "on", "right": "nous"},
+ {"line": 1, "wrong": "on", "right": "on"},
+ {"line": 0, "wrong": "Elga", "right": "Elgh"}]
+```"""
+    assert meeting.parse_suggestions(answer, segments) == [
+        {"segment": 0, "wrong": "Lefebre", "right": "Lefebvre"},
+        {"segment": 0, "wrong": "TeraSpin", "right": "TeraSPIN"}]
+    assert meeting.parse_suggestions("I found no error.", segments) == []
+    assert meeting.parse_suggestions("[{broken", segments) == []
+
+
+def _reviewed_meeting(tmp_path, texts):
+    meeting_dir = tmp_path / "Meetings" / "2026-10-27_09h19_Camille-review"
+    meeting_dir.mkdir(parents=True)
+    segments = [{"start": float(i), "end": i + 1.0, "text": t} for i, t in enumerate(texts)]
+    (meeting_dir / "segments.json").write_text(json.dumps(segments))
+    (meeting_dir / "transcript.md").write_text(
+        f"# Transcript: x\n\n{meeting.format_transcript(segments)}\n")
+    return meeting_dir
+
+
+def test_review_applies_confirmed_corrections_then_asks_for_rules(tmp_path, monkeypatch, no_personal_dictionary):
+    meeting_dir = _reviewed_meeting(tmp_path, ["Lefebre présente TeraSpin", "Lefebre revient", "le neuro symbolique"])
+    _fake_llm_answering(monkeypatch, json.dumps([
+        {"line": 0, "wrong": "Lefebre", "right": "Lefebvre"},
+        {"line": 1, "wrong": "Lefebre", "right": "Lefebvre"},
+        {"line": 0, "wrong": "TeraSpin", "right": "Teraspin"},
+        {"line": 2, "wrong": "neuro symbolique", "right": "neuro-symbolique"}]))
+    # Transcript: apply, edit to type the right spelling, skip. Dictionary: 2 corrections, then 2 terms.
+    answers = iter(["y", "e", "TeraSPIN", "n", "y", "n", "y", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    meeting.main(["review", str(meeting_dir), "--no-telemetry"])
+
+    segments = json.loads((meeting_dir / "segments.json").read_text())
+    assert [s["text"] for s in segments] == ["Lefebvre présente TeraSPIN", "Lefebvre revient", "le neuro symbolique"]
+    assert segments[0]["whisper_text"] == "Lefebre présente TeraSpin" and "whisper_text" not in segments[2]
+    assert (meeting_dir / "transcript.md").read_text() == (
+        "# Transcript: x\n\n[00:00:00] Lefebvre présente TeraSPIN\n[00:00:01] Lefebvre revient\n"
+        "[00:00:02] le neuro symbolique\n")
+    assert dictionary.load(no_personal_dictionary) == {"terms": ["Lefebvre"],
+                                                       "corrections": {"Lefebre": "Lefebvre"}}
+
+
+def test_review_refuses_a_transcript_edited_by_hand(tmp_path, monkeypatch):
+    meeting_dir = _reviewed_meeting(tmp_path, ["Lefebre revient"])
+    (meeting_dir / "transcript.md").write_text("# Transcript: x\n\n[00:00:00] Lefebvre revient\n")
+    with pytest.raises(SystemExit, match="edited by hand"):
+        meeting.main(["review", str(meeting_dir), "--no-telemetry"])
+    assert json.loads((meeting_dir / "segments.json").read_text())[0]["text"] == "Lefebre revient"

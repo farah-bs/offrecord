@@ -123,7 +123,7 @@ def word_error_rate(reference: list[str], hypothesis: list[str]) -> float:
     return errors / max(len(ref), 1)
 
 
-def _looks_like_a_term(text: str) -> bool:
+def looks_like_a_term(text: str) -> bool:
     """Names, acronyms and jargon: an uppercase letter, a digit or a hyphen."""
     return any(c.isupper() or c.isdigit() or c == "-" for c in text)
 
@@ -142,6 +142,6 @@ def propose(original: list[str], edited: list[str], dictionary: dict) -> tuple[l
                 continue  # a rewrite, not a misheard word
             if dictionary["corrections"].get(wrong) != right:
                 corrections[wrong, right] += 1
-        if op != "delete" and _looks_like_a_term(right) and right not in dictionary["terms"]:
+        if op != "delete" and looks_like_a_term(right) and right not in dictionary["terms"]:
             terms[right] += 1
     return ([(w, r, n) for (w, r), n in corrections.most_common()], terms.most_common())
