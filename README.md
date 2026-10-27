@@ -92,7 +92,7 @@ cd offrecord
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install numpy psutil pandas matplotlib sounddevice soundfile
+python -m pip install numpy psutil pandas matplotlib sounddevice soundfile jiwer
 python -m pip install mlx mlx-lm mlx-whisper
 python -m pip install torch pyannote.audio
 ```

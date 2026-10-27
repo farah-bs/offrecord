@@ -117,10 +117,16 @@ def _similarity(a: str, b: str) -> float:
 
 
 def word_error_rate(reference: list[str], hypothesis: list[str]) -> float:
-    """Substituted, inserted and deleted words over the reference length, ignoring case."""
+    """Substituted, inserted and deleted words over the reference length, ignoring case.
+
+    The fewest edits, as computed by jiwer: difflib's alignment is not minimal and counted up to twice
+    the errors."""
+    import jiwer
+
     ref, hyp = [w.lower() for w in reference], [w.lower() for w in hypothesis]
-    errors = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in _opcodes(hyp, ref) if op != "equal")
-    return errors / max(len(ref), 1)
+    if not ref or not hyp:
+        return float(len(hyp)) if not ref else 1.0
+    return jiwer.wer(" ".join(ref), " ".join(hyp))  # words contain no spaces
 
 
 def looks_like_a_term(text: str) -> bool:

@@ -1,7 +1,9 @@
 import json
+import random
 import sys
 import types
 
+import jiwer
 import numpy as np
 import pytest
 
@@ -114,6 +116,20 @@ def test_word_error_rate():
     assert dictionary.word_error_rate(ref, ref) == 0
     assert dictionary.word_error_rate(ref, "Le modèle Teraspin est prêt".split()) == 0  # case ignored
     assert dictionary.word_error_rate(ref, "le modèle tera spin est prêt".split()) == 2 / 5
+
+
+def test_learn_wer_is_the_fewest_edits_like_jiwer():
+    # difflib's alignment counted 1.2 here, twice the real word error rate.
+    assert dictionary.word_error_rate("data prêt est la réunion".split(),
+                                      "prêt réunion est on réunion".split()) == pytest.approx(0.6)
+    rng = random.Random(0)
+    vocab = "le la un modèle réunion test est prêt on a dit que bien".split()
+    for _ in range(300):
+        ref = [rng.choice(vocab) for _ in range(rng.randint(3, 20))]
+        hyp = [w if rng.random() > 0.2 else rng.choice(vocab) for w in ref if rng.random() > 0.1]
+        hyp += [rng.choice(vocab) for _ in range(rng.randint(0, 2))]
+        expected = jiwer.wer(" ".join(ref), " ".join(hyp)) if hyp else 1.0
+        assert dictionary.word_error_rate(ref, hyp) == pytest.approx(expected)
 
 
 def test_propose_finds_repeated_corrections_and_new_terms():
