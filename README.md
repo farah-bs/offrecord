@@ -385,13 +385,17 @@ The clips file lists each clip's start and end (at most 30 s) and the terms it c
 
 Clip files describe private recordings and are ignored by Git. Each run is kept in `telemetry/<date>_prompt_comparison_<id>/` with the transcribed texts (`outputs.jsonl`) and a chart (`prompt_comparison.png`), so successive runs form a history.
 
+## Benchmarks
+
+Model choices are measured on public meeting recordings (AMI, SUMM-RE) with standard metrics, confidence intervals, and a scorer that checks itself before every run. [BENCHMARKS.md](BENCHMARKS.md) sets out the protocol; the scorer is `benchmarks/score.py`, and needs `python -m pip install whisper-normalizer`.
+
 ## Tests
 
 The tests run in a few seconds and download no model: Whisper, diarization, and the LLM are
 replaced by stubs.
 
 ```bash
-python -m pip install pytest
+python -m pip install pytest whisper-normalizer
 python -m pytest tests
 ```
 
@@ -399,17 +403,21 @@ They cover telemetry (spans, metrics, the sampler process, no-op mode), per-run 
 comparison reports, hallucination filtering, speaker assignment, the CLI end to end,
 language selection, the two-pass report, error reporting, the privacy of telemetry, and the
 dictionary: corrections, prompt budget, 30-second blocks and their timestamps, the glossary,
-proposals from hand corrections, the `learn` and `review` commands, and the word error rate chart.
+proposals from hand corrections, the `learn` and `review` commands, and the word error rate chart;
+and the benchmark scorer: known answers, agreement with jiwer, confidence intervals, paired
+comparisons, and benchmarks transcribing exactly like `meeting.py`.
 
 ## Layout
 
 ```text
 .
+├── BENCHMARKS.md          # how model choices are measured
 ├── LICENSE                # MIT
 ├── meeting.py             # recording, transcription, report, review, and learn CLI
 ├── dictionary.py          # personal dictionary: corrections, prompt, glossary, learning
 ├── telemetry.py           # resource instrumentation and collection
 ├── analyze_telemetry.py   # CSV aggregation and charts
+├── benchmarks/            # scoring for the public benchmarks (see BENCHMARKS.md)
 ├── experiments/           # prompt and model comparisons
 ├── tests/                 # pytest suite (no model download)
 ├── dictionary.json        # your terms and corrections (private, ignored by Git)
