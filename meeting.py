@@ -190,6 +190,27 @@ def transcribe(audio: np.ndarray, model: str, language: str | None, prompt: str 
     return segments
 
 
+def transcript_segments(audio: np.ndarray, model: str, language: str | None, dictionary: dict,
+                        vocabulary: str | None = None) -> list[dict]:
+    """Whisper with the dictionary's prompt, then its corrections: the transcript before speakers.
+    The benchmarks call this function too, so that they measure exactly what meeting.py produces."""
+    terms = dictionary_file.prompt_terms(dictionary["terms"], vocabulary)
+    metric("prompt_terms", len(terms))
+    t0 = time.time()
+    with span("transcript", agent="whisper", model=model, language=language) as s:
+        segments = transcribe(audio, model, language, dictionary_file.whisper_prompt(terms))
+        s["segments"] = len(segments)
+        # compute time / audio duration: below 1 means faster than real time
+        metric("rtf", (time.time() - t0) / (len(audio) / SR))
+    print(f"   {len(segments)} segments in {time.time() - t0:.0f} s")
+
+    corrected = dictionary_file.apply_corrections(segments, dictionary["corrections"])
+    metric("corrections_applied", corrected)
+    if corrected:
+        print(f"   {corrected} corrections from the dictionary")
+    return segments
+
+
 # ---------------------------------------------------------------- speakers
 
 def diarize(audio: np.ndarray, model: str, num_speakers: int | None) -> list[tuple]:
@@ -759,21 +780,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if len(audio) < SR:
         sys.exit("Audio too short or empty: check microphone access.")
 
-    terms = dictionary_file.prompt_terms(dictionary["terms"], args.vocabulary)
-    metric("prompt_terms", len(terms))
-    t0 = time.time()
-    with span("transcript", agent="whisper", model=args.whisper_model, language=args.language) as s:
-        segments = transcribe(audio, args.whisper_model, args.language,
-                              dictionary_file.whisper_prompt(terms))
-        s["segments"] = len(segments)
-        # compute time / audio duration: below 1 means faster than real time
-        metric("rtf", (time.time() - t0) / audio_duration)
-    print(f"   {len(segments)} segments in {time.time() - t0:.0f} s")
-
-    corrected = dictionary_file.apply_corrections(segments, dictionary["corrections"])
-    metric("corrections_applied", corrected)
-    if corrected:
-        print(f"   {corrected} corrections from the dictionary")
+    segments = transcript_segments(audio, args.whisper_model, args.language, dictionary, args.vocabulary)
 
     if args.speakers:
         try:
