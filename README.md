@@ -1,6 +1,8 @@
-# Meeting Assistant
+# offrecord
 
-Local meeting assistant for macOS Apple Silicon. The project records or loads audio, transcribes it with Whisper through MLX, can identify speakers with pyannote, and can produce a detailed meeting report with a local LLM. A personal dictionary, learned from the corrections you make, improves the spelling of names and jargon over time. Audio and text remain on the machine: no remote API call is required. Hugging Face is contacted only to download each model the first time.
+**Meeting notes that stay off the record.** Transcription, speakers, and reports, entirely on your Mac.
+
+offrecord is a local meeting assistant for macOS Apple Silicon. The project records or loads audio, transcribes it with Whisper through MLX, can identify speakers with pyannote, and can produce a detailed meeting report with a local LLM. A personal dictionary, learned from the corrections you make, improves the spelling of names and jargon over time. Audio and text remain on the machine: no remote API call is required. Hugging Face is contacted only to download each model the first time.
 
 > **Project status**: the pipeline is designed for an Apple Silicon Mac and Python 3.13, or a version compatible with the MLX packages in use.
 
@@ -84,9 +86,9 @@ Everything else is plain code: block cuts use audio energy, corrections use regu
 
 ## Step-by-step installation
 
-From the repository root:
-
 ```bash
+git clone https://github.com/farah-bs/offrecord.git
+cd offrecord
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
